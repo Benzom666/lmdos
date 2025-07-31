@@ -95,9 +95,9 @@ export default function AdminDashboard() {
 
   return (
     <DashboardLayout>
-      <div className="space-y-12">
+      <div className="space-y-8">
         {/* Welcome Header */}
-        <div className="text-center space-y-4 py-8">
+        <div className="text-center space-y-4">
           <h1 className="text-4xl font-bold tracking-tight">Welcome back, {profile?.first_name || "Admin"}</h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
             Manage your delivery operations with ease. Here's an overview of your current performance.
@@ -112,20 +112,14 @@ export default function AdminDashboard() {
               Create New Order
             </Link>
           </Button>
-          {/* <Button size="lg" variant="outline" className="h-16 px-8 text-lg" asChild>
-            <Link href="/admin/labels/create">
-              <QrCode className="h-6 w-6 mr-3" />
-              Generate Label
-            </Link>
-          </Button> */}
         </div>
 
         {/* Key Metrics */}
-        <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Card className="border-2 hover:shadow-lg transition-all duration-200">
             <CardHeader className="pb-4">
               <div className="flex items-center justify-between">
-                <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-xl">
+                <div className="p-3 bg-blue-100 dark:bg-blue-900/20 rounded-xl">
                   <Truck className="h-8 w-8 text-blue-600 dark:text-blue-400" />
                 </div>
                 <div className="text-right">
@@ -147,7 +141,7 @@ export default function AdminDashboard() {
           <Card className="border-2 hover:shadow-lg transition-all duration-200">
             <CardHeader className="pb-4">
               <div className="flex items-center justify-between">
-                <div className="p-3 bg-green-100 dark:bg-green-900 rounded-xl">
+                <div className="p-3 bg-green-100 dark:bg-green-900/20 rounded-xl">
                   <Package className="h-8 w-8 text-green-600 dark:text-green-400" />
                 </div>
                 <div className="text-right">
@@ -169,7 +163,7 @@ export default function AdminDashboard() {
           <Card className="border-2 hover:shadow-lg transition-all duration-200">
             <CardHeader className="pb-4">
               <div className="flex items-center justify-between">
-                <div className="p-3 bg-orange-100 dark:bg-orange-900 rounded-xl">
+                <div className="p-3 bg-orange-100 dark:bg-orange-900/20 rounded-xl">
                   <Clock className="h-8 w-8 text-orange-600 dark:text-orange-400" />
                 </div>
                 <div className="text-right">
@@ -182,7 +176,7 @@ export default function AdminDashboard() {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Needs attention</span>
                 {stats.pendingOrders > 0 && (
-                  <span className="bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 px-2 py-1 rounded-full text-xs font-medium">
+                  <span className="bg-orange-100 dark:bg-orange-900/20 text-orange-700 dark:text-orange-300 px-2 py-1 rounded-full text-xs font-medium">
                     Active
                   </span>
                 )}
@@ -193,7 +187,7 @@ export default function AdminDashboard() {
           <Card className="border-2 hover:shadow-lg transition-all duration-200">
             <CardHeader className="pb-4">
               <div className="flex items-center justify-between">
-                <div className="p-3 bg-emerald-100 dark:bg-emerald-900 rounded-xl">
+                <div className="p-3 bg-emerald-100 dark:bg-emerald-900/20 rounded-xl">
                   <CheckCircle className="h-8 w-8 text-emerald-600 dark:text-emerald-400" />
                 </div>
                 <div className="text-right">
@@ -218,11 +212,11 @@ export default function AdminDashboard() {
             <p className="text-muted-foreground">Common tasks to manage your delivery operations</p>
           </div>
 
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 max-w-6xl mx-auto">
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 max-w-6xl mx-auto">
             <Card className="border-2 hover:shadow-lg transition-all duration-200 cursor-pointer group">
               <Link href="/admin/orders" className="block">
                 <CardHeader className="text-center pb-4">
-                  <div className="mx-auto p-4 bg-blue-50 dark:bg-blue-950 rounded-2xl w-fit group-hover:scale-110 transition-transform">
+                  <div className="mx-auto p-4 bg-blue-50 dark:bg-blue-950/20 rounded-2xl w-fit group-hover:scale-110 transition-transform">
                     <Package className="h-10 w-10 text-blue-600 dark:text-blue-400" />
                   </div>
                   <CardTitle className="text-xl">Manage Orders</CardTitle>
@@ -239,7 +233,7 @@ export default function AdminDashboard() {
             <Card className="border-2 hover:shadow-lg transition-all duration-200 cursor-pointer group">
               <Link href="/admin/drivers" className="block">
                 <CardHeader className="text-center pb-4">
-                  <div className="mx-auto p-4 bg-green-50 dark:bg-green-950 rounded-2xl w-fit group-hover:scale-110 transition-transform">
+                  <div className="mx-auto p-4 bg-green-50 dark:bg-green-950/20 rounded-2xl w-fit group-hover:scale-110 transition-transform">
                     <Users className="h-10 w-10 text-green-600 dark:text-green-400" />
                   </div>
                   <CardTitle className="text-xl">Manage Drivers</CardTitle>
@@ -256,7 +250,7 @@ export default function AdminDashboard() {
             <Card className="border-2 hover:shadow-lg transition-all duration-200 cursor-pointer group">
               <Link href="/admin/settings" className="block">
                 <CardHeader className="text-center pb-4">
-                  <div className="mx-auto p-4 bg-orange-50 dark:bg-orange-950 rounded-2xl w-fit group-hover:scale-110 transition-transform">
+                  <div className="mx-auto p-4 bg-orange-50 dark:bg-orange-950/20 rounded-2xl w-fit group-hover:scale-110 transition-transform">
                     <Activity className="h-10 w-10 text-orange-600 dark:text-orange-400" />
                   </div>
                   <CardTitle className="text-xl">Analytics</CardTitle>

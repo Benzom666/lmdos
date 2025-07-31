@@ -1,7 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Bell } from "lucide-react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -11,106 +10,140 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useAuth } from "@/contexts/auth-context"
-import { getUserNotifications, markNotificationAsRead } from "@/lib/notifications"
-import type { Notification } from "@/lib/supabase"
 import { Badge } from "@/components/ui/badge"
+import { Bell, Package, Truck, AlertTriangle } from "lucide-react"
+
+interface Notification {
+  id: string
+  title: string
+  message: string
+  type: "info" | "warning" | "success" | "error"
+  timestamp: Date
+  read: boolean
+}
+
+const mockNotifications: Notification[] = [
+  {
+    id: "1",
+    title: "New Order Assigned",
+    message: "Order #ORD001 has been assigned to John Smith",
+    type: "info",
+    timestamp: new Date(Date.now() - 5 * 60 * 1000), // 5 minutes ago
+    read: false,
+  },
+  {
+    id: "2",
+    title: "Delivery Completed",
+    message: "Order #ORD002 has been successfully delivered",
+    type: "success",
+    timestamp: new Date(Date.now() - 15 * 60 * 1000), // 15 minutes ago
+    read: false,
+  },
+  {
+    id: "3",
+    title: "Driver Delayed",
+    message: "Sarah Davis is running 10 minutes behind schedule",
+    type: "warning",
+    timestamp: new Date(Date.now() - 30 * 60 * 1000), // 30 minutes ago
+    read: true,
+  },
+]
+
+const getNotificationIcon = (type: string) => {
+  switch (type) {
+    case "info":
+      return <Package className="h-4 w-4 text-blue-500" />
+    case "success":
+      return <Truck className="h-4 w-4 text-green-500" />
+    case "warning":
+      return <AlertTriangle className="h-4 w-4 text-yellow-500" />
+    case "error":
+      return <AlertTriangle className="h-4 w-4 text-red-500" />
+    default:
+      return <Bell className="h-4 w-4" />
+  }
+}
+
+const formatTimestamp = (timestamp: Date) => {
+  const now = new Date()
+  const diff = now.getTime() - timestamp.getTime()
+  const minutes = Math.floor(diff / (1000 * 60))
+  const hours = Math.floor(diff / (1000 * 60 * 60))
+
+  if (minutes < 60) {
+    return `${minutes}m ago`
+  } else if (hours < 24) {
+    return `${hours}h ago`
+  } else {
+    return timestamp.toLocaleDateString()
+  }
+}
 
 export function NotificationsDropdown() {
-  const { profile } = useAuth()
-  const [notifications, setNotifications] = useState<Notification[]>([])
-  const [loading, setLoading] = useState(false)
-  const [open, setOpen] = useState(false)
-
+  const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
   const unreadCount = notifications.filter((n) => !n.read).length
 
-  useEffect(() => {
-    if (profile && open) {
-      fetchNotifications()
-    }
-  }, [profile, open])
-
-  const fetchNotifications = async () => {
-    if (!profile) return
-
-    setLoading(true)
-    try {
-      const data = await getUserNotifications(profile.id)
-      setNotifications(data)
-    } catch (error) {
-      console.error("Error fetching notifications:", error)
-    } finally {
-      setLoading(false)
-    }
+  const markAsRead = (id: string) => {
+    setNotifications((prev) =>
+      prev.map((notification) => (notification.id === id ? { ...notification, read: true } : notification)),
+    )
   }
 
-  const handleNotificationClick = async (notification: Notification) => {
-    if (!notification.read) {
-      const success = await markNotificationAsRead(notification.id)
-      if (success) {
-        setNotifications(notifications.map((n) => (n.id === notification.id ? { ...n, read: true } : n)))
-      }
-    }
-    setOpen(false)
-  }
-
-  const getNotificationIcon = (type: string) => {
-    switch (type) {
-      case "success":
-        return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300"
-      case "warning":
-        return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300"
-      case "error":
-        return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300"
-      default:
-        return "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300"
-    }
+  const markAllAsRead = () => {
+    setNotifications((prev) => prev.map((notification) => ({ ...notification, read: true })))
   }
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" className="relative">
-          <Bell className="h-5 w-5" />
+          <Bell className="h-4 w-4" />
           {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] text-white">
+            <Badge
+              variant="destructive"
+              className="absolute -top-1 -right-1 h-5 w-5 rounded-full p-0 text-xs flex items-center justify-center"
+            >
               {unreadCount}
-            </span>
+            </Badge>
           )}
           <span className="sr-only">Notifications</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-80">
-        <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+        <DropdownMenuLabel className="flex items-center justify-between">
+          <span>Notifications</span>
+          {unreadCount > 0 && (
+            <Button variant="ghost" size="sm" onClick={markAllAsRead} className="text-xs">
+              Mark all read
+            </Button>
+          )}
+        </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {loading ? (
-          <div className="p-4 text-center text-sm text-muted-foreground">Loading notifications...</div>
-        ) : notifications.length === 0 ? (
-          <div className="p-4 text-center text-sm text-muted-foreground">No notifications</div>
-        ) : (
-          notifications.slice(0, 5).map((notification) => (
+        {notifications.length > 0 ? (
+          notifications.map((notification) => (
             <DropdownMenuItem
               key={notification.id}
-              className={`flex flex-col items-start p-3 ${!notification.read ? "bg-muted/50" : ""}`}
-              onClick={() => handleNotificationClick(notification)}
+              className="flex items-start gap-3 p-3 cursor-pointer"
+              onClick={() => markAsRead(notification.id)}
             >
-              <div className="flex w-full items-center justify-between">
-                <span className="font-medium">{notification.title}</span>
-                <Badge variant="outline" className={getNotificationIcon(notification.type)}>
-                  {notification.type}
-                </Badge>
+              <div className="flex-shrink-0 mt-0.5">{getNotificationIcon(notification.type)}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium truncate">{notification.title}</p>
+                  {!notification.read && <div className="w-2 h-2 bg-blue-500 rounded-full flex-shrink-0" />}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">{notification.message}</p>
+                <p className="text-xs text-muted-foreground mt-1">{formatTimestamp(notification.timestamp)}</p>
               </div>
-              <span className="text-sm text-muted-foreground">{notification.message}</span>
-              <span className="mt-1 text-xs text-muted-foreground">
-                {new Date(notification.created_at).toLocaleString()}
-              </span>
             </DropdownMenuItem>
           ))
-        )}
-        {notifications.length > 5 && (
-          <div className="p-2 text-center text-xs text-muted-foreground">
-            + {notifications.length - 5} more notifications
-          </div>
+        ) : (
+          <DropdownMenuItem disabled>
+            <div className="text-center py-4">
+              <Bell className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+              <p className="text-sm text-muted-foreground">No notifications</p>
+            </div>
+          </DropdownMenuItem>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

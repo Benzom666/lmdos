@@ -1,45 +1,69 @@
 "use client"
 
+import type React from "react"
+
 import { useState, useEffect } from "react"
-import { Card, CardContent } from "@/components/ui/card"
+import { useAuth } from "@/contexts/auth-context"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Loader2, Eye, EyeOff, Truck, Zap, Shield, ArrowRight, ChevronLeft, Settings } from "lucide-react"
-import { supabase } from "@/lib/supabase"
+import { Card, CardContent } from "@/components/ui/card"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Loader2, Truck, Package, Users } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 
 export default function AuthPage() {
-  const [activeTab, setActiveTab] = useState<string>("admin")
-  const [email, setEmail] = useState<string>("")
-  const [password, setPassword] = useState<string>("")
-  const [confirmPassword, setConfirmPassword] = useState<string>("")
-  const [firstName, setFirstName] = useState<string>("")
-  const [lastName, setLastName] = useState<string>("")
-  const [isLoading, setIsLoading] = useState<boolean>(false)
-  const [error, setError] = useState<string | null>(null)
-  const [showSignup, setShowSignup] = useState<boolean>(false)
-  const [showPassword, setShowPassword] = useState<boolean>(false)
-  const [keepLoggedIn, setKeepLoggedIn] = useState<boolean>(false)
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [firstName, setFirstName] = useState("")
+  const [lastName, setLastName] = useState("")
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState("")
+  const [showSignup, setShowSignup] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [keepLoggedIn, setKeepLoggedIn] = useState(false)
 
   // Super Admin mode state
-  const [superAdminOpen, setSuperAdminOpen] = useState<boolean>(false)
-  const [superAdminUsername, setSuperAdminUsername] = useState<string>("")
-  const [superAdminPassword, setSuperAdminPassword] = useState<string>("")
-  const [showSuperAdminPassword, setShowSuperAdminPassword] = useState<boolean>(false)
-  const [superAdminLoading, setSuperAdminLoading] = useState<boolean>(false)
-  const [superAdminError, setSuperAdminError] = useState<string | null>(null)
+  const [superAdminOpen, setSuperAdminOpen] = useState(false)
+  const [superAdminUsername, setSuperAdminUsername] = useState("")
+  const [superAdminPassword, setSuperAdminPassword] = useState("")
+  const [showSuperAdminPassword, setShowSuperAdminPassword] = useState(false)
+  const [superAdminLoading, setSuperAdminLoading] = useState(false)
+  const [superAdminError, setSuperAdminError] = useState("")
 
   // Animation states
   const [mounted, setMounted] = useState(false)
+
+  const { signIn, user, profile, loading } = useAuth()
+  const router = useRouter()
 
   useEffect(() => {
     setMounted(true)
   }, [])
 
+  useEffect(() => {
+    if (user && profile && !loading) {
+      // Redirect based on role
+      switch (profile.role) {
+        case "super_admin":
+          router.push("/super-admin")
+          break
+        case "admin":
+          router.push("/admin/dashboard")
+          break
+        case "driver":
+          router.push("/driver/home")
+          break
+        default:
+          router.push("/profile")
+      }
+    }
+  }, [user, profile, loading, router])
+
   const handleSuperAdminLogin = async () => {
-    setSuperAdminError(null)
+    setSuperAdminError("")
     setSuperAdminLoading(true)
 
     try {
@@ -59,10 +83,7 @@ export default function AuthPage() {
         return
       }
 
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({
-        email: superAdminEmail,
-        password: expectedPassword,
-      })
+      const { data, error: signInError } = await signIn(superAdminEmail, expectedPassword)
 
       if (signInError) {
         console.log("🔧 Creating super admin account...")
@@ -77,10 +98,7 @@ export default function AuthPage() {
 
           console.log("✅ Super admin account created, attempting login...")
 
-          const { data: retryData, error: retrySignInError } = await supabase.auth.signInWithPassword({
-            email: superAdminEmail,
-            password: expectedPassword,
-          })
+          const { data: retryData, error: retrySignInError } = await signIn(superAdminEmail, expectedPassword)
 
           if (retrySignInError) {
             throw new Error(retrySignInError.message || "Failed to sign in after account creation")
@@ -88,7 +106,7 @@ export default function AuthPage() {
 
           if (retryData.user) {
             console.log("✅ Super admin login successful after creation")
-            window.location.href = "/super-admin"
+            router.push("/super-admin")
             return
           }
         } catch (createError) {
@@ -100,45 +118,14 @@ export default function AuthPage() {
       if (data.user) {
         console.log("✅ Authentication successful, checking role...")
 
-        const { data: profileData, error: profileError } = await supabase
-          .from("user_profiles")
-          .select("role")
-          .eq("user_id", data.user.id)
-          .single()
+        const { data: profileData } = await fetch(`/api/user-profile/${data.user.id}`)
+        const profileJson = await profileData.json()
 
-        if (profileError) {
-          console.error("Profile fetch error:", profileError)
-          console.log("🔧 Creating super admin profile...")
-
-          const { error: insertError } = await supabase.from("user_profiles").insert({
-            user_id: data.user.id,
-            email: superAdminEmail,
-            first_name: "Super",
-            last_name: "Admin",
-            role: "super_admin",
-          })
-
-          if (insertError) {
-            console.error("Failed to create profile:", insertError)
-            throw new Error("Failed to create super admin profile")
-          }
-
-          console.log("✅ Super admin profile created, redirecting...")
-          window.location.href = "/super-admin"
-          return
-        }
-
-        if (profileData) {
-          console.log("Profile data:", profileData)
-
-          if (profileData.role === "super_admin") {
-            console.log("✅ Super admin access granted")
-            window.location.href = "/super-admin"
-          } else {
-            throw new Error("Invalid user role for super admin access")
-          }
+        if (profileJson.role === "super_admin") {
+          console.log("✅ Super admin access granted")
+          router.push("/super-admin")
         } else {
-          throw new Error("No profile data found")
+          throw new Error("Invalid user role for super admin access")
         }
       }
     } catch (err) {
@@ -149,8 +136,9 @@ export default function AuthPage() {
     }
   }
 
-  const handleSignIn = async (role: string) => {
-    setError(null)
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError("")
     setIsLoading(true)
 
     try {
@@ -162,39 +150,14 @@ export default function AuthPage() {
       console.log("🔐 Attempting sign in:", email)
 
       // Configure session persistence based on "Keep me logged in" checkbox
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-        options: {
-          // Use 'local' for persistent login, 'session' for session-only
-          persistSession: keepLoggedIn ? "local" : "session",
-        },
-      })
+      const { error: signInError } = await signIn(email, password)
 
       if (signInError) {
         setError(signInError.message || "Failed to sign in")
         return
       }
 
-      if (data.user) {
-        console.log("✅ Sign in successful")
-
-        const { data: profileData } = await supabase
-          .from("user_profiles")
-          .select("role")
-          .eq("user_id", data.user.id)
-          .single()
-
-        if (profileData) {
-          const dashboardPath =
-            profileData.role === "admin" ? "/admin/dashboard" : profileData.role === "driver" ? "/driver/orders" : "/"
-
-          window.location.href = dashboardPath
-        } else {
-          const dashboardPath = role === "admin" ? "/admin/dashboard" : role === "driver" ? "/driver/orders" : "/"
-          window.location.href = dashboardPath
-        }
-      }
+      console.log("✅ Sign in successful")
     } catch (err) {
       console.error("❌ Sign in error:", err)
       setError("An unexpected error occurred during sign in")
@@ -204,7 +167,7 @@ export default function AuthPage() {
   }
 
   const handleSignUp = async (role: string) => {
-    setError(null)
+    setError("")
 
     if (password !== confirmPassword) {
       setError("Passwords do not match")
@@ -221,52 +184,22 @@ export default function AuthPage() {
     try {
       console.log("📝 Attempting sign up:", email, role)
 
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            role,
-            first_name: firstName,
-            last_name: lastName,
-          },
+      const signUpResponse = await fetch("/api/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({ email, password, firstName, lastName, role }),
       })
 
-      if (signUpError) {
-        setError(signUpError.message || "Failed to sign up")
+      const signUpData = await signUpResponse.json()
+
+      if (!signUpResponse.ok) {
+        setError(signUpData.error || "Failed to sign up")
         return
       }
 
-      if (data.user) {
-        const { error: profileError } = await supabase.from("user_profiles").insert({
-          user_id: data.user.id,
-          email: email,
-          first_name: firstName,
-          last_name: lastName,
-          role: role,
-        })
-
-        if (profileError) {
-          console.error("Profile creation error:", profileError)
-        }
-
-        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        })
-
-        if (signInError) {
-          setError(signInError.message || "Account created but failed to sign in")
-          return
-        }
-
-        if (signInData.user) {
-          console.log("✅ Sign up and sign in successful")
-          const dashboardPath = role === "admin" ? "/admin/dashboard" : role === "driver" ? "/driver/orders" : "/"
-          window.location.href = dashboardPath
-        }
-      }
+      console.log("✅ Sign up successful")
     } catch (err) {
       console.error("❌ Sign up error:", err)
       setError("An unexpected error occurred during sign up")
@@ -282,13 +215,13 @@ export default function AuthPage() {
     setFirstName("")
     setLastName("")
     setKeepLoggedIn(false)
-    setError(null)
+    setError("")
   }
 
   const clearSuperAdminForm = () => {
     setSuperAdminUsername("")
     setSuperAdminPassword("")
-    setSuperAdminError(null)
+    setSuperAdminError("")
     setShowSuperAdminPassword(false)
   }
 
@@ -300,6 +233,14 @@ export default function AuthPage() {
   const switchToLogin = () => {
     setShowSignup(false)
     clearForm()
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600"></div>
+      </div>
+    )
   }
 
   return (
@@ -330,7 +271,7 @@ export default function AuthPage() {
           size="sm"
           className="bg-red-600/10 border-red-500/30 text-red-400 hover:bg-red-600/20 hover:border-red-400/50 hover:text-red-300 dark:bg-red-600/5 dark:border-red-500/20 dark:text-red-300 dark:hover:bg-red-600/10 transition-all duration-300"
         >
-          <Settings className="w-4 h-4" />
+          <Truck className="w-4 h-4" />
         </Button>
       </div>
 
@@ -357,35 +298,9 @@ export default function AuthPage() {
           {/* Main Card */}
           <Card className="bg-slate-800/50 dark:bg-slate-900/50 backdrop-blur-xl border-slate-700/50 dark:border-slate-600/50 shadow-2xl">
             <CardContent className="p-8">
-              {/* Role Selector */}
-              <div className="flex mb-8 bg-slate-900/50 dark:bg-slate-950/50 rounded-lg p-1">
-                <button
-                  onClick={() => setActiveTab("admin")}
-                  className={`flex-1 py-3 px-4 rounded-md text-sm font-medium transition-all duration-300 ${
-                    activeTab === "admin"
-                      ? "bg-gradient-to-r from-purple-600 to-pink-600 dark:from-purple-500 dark:to-pink-500 text-white shadow-lg"
-                      : "text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300"
-                  }`}
-                >
-                  <Shield className="w-4 h-4 inline mr-2" />
-                  Admin
-                </button>
-                <button
-                  onClick={() => setActiveTab("driver")}
-                  className={`flex-1 py-3 px-4 rounded-md text-sm font-medium transition-all duration-300 ${
-                    activeTab === "driver"
-                      ? "bg-gradient-to-r from-cyan-600 to-blue-600 dark:from-cyan-500 dark:to-blue-500 text-white shadow-lg"
-                      : "text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300"
-                  }`}
-                >
-                  <Zap className="w-4 h-4 inline mr-2" />
-                  Driver
-                </button>
-              </div>
-
               {!showSignup ? (
                 // Login Form
-                <div className="space-y-6">
+                <form onSubmit={handleSignIn} className="space-y-6">
                   <div className="text-center">
                     <h2 className="text-2xl font-bold text-white dark:text-slate-100 mb-2">Welcome Back</h2>
                     <p className="text-slate-400 dark:text-slate-500 text-sm">Sign in to your account</p>
@@ -424,7 +339,7 @@ export default function AuthPage() {
                           onClick={() => setShowPassword(!showPassword)}
                           className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300 transition-colors"
                         >
-                          {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                          {showPassword ? <Truck className="w-5 h-5" /> : <Truck className="w-5 h-5" />}
                         </button>
                       </div>
                     </div>
@@ -436,7 +351,7 @@ export default function AuthPage() {
                       type="checkbox"
                       checked={keepLoggedIn}
                       onChange={(e) => setKeepLoggedIn(e.target.checked)}
-                      className="w-4 h-4 text-cyan-600 bg-slate-900/50 border-slate-600 rounded focus:ring-cyan-500 focus:ring-2"
+                      className="w-4 h-4 text-cyan-600 bg-slate-900/50 border-slate-600 dark:border-slate-700 rounded focus:ring-cyan-500 focus:ring-2"
                     />
                     <Label
                       htmlFor="keep-logged-in"
@@ -447,15 +362,11 @@ export default function AuthPage() {
                   </div>
 
                   <Button
-                    onClick={() => handleSignIn(activeTab)}
+                    type="submit"
                     disabled={isLoading}
                     className="w-full h-12 bg-gradient-to-r from-cyan-600 to-blue-600 dark:from-cyan-500 dark:to-blue-500 hover:from-cyan-700 hover:to-blue-700 dark:hover:from-cyan-600 dark:hover:to-blue-600 text-white font-medium rounded-lg transition-all duration-300 transform hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isLoading ? (
-                      <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                    ) : (
-                      <ArrowRight className="w-5 h-5 mr-2" />
-                    )}
+                    {isLoading ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <Truck className="w-5 h-5 mr-2" />}
                     {isLoading ? "Signing In..." : "Sign In"}
                   </Button>
 
@@ -467,7 +378,7 @@ export default function AuthPage() {
                       Don't have an account? <span className="font-medium">Create one</span>
                     </button>
                   </div>
-                </div>
+                </form>
               ) : (
                 // Signup Form
                 <div className="space-y-6">
@@ -476,7 +387,7 @@ export default function AuthPage() {
                       onClick={switchToLogin}
                       className="text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300 transition-colors mr-3"
                     >
-                      <ChevronLeft className="w-5 h-5" />
+                      <Truck className="w-5 h-5" />
                     </button>
                     <div>
                       <h2 className="text-2xl font-bold text-white dark:text-slate-100">Create Account</h2>
@@ -554,16 +465,12 @@ export default function AuthPage() {
                   </div>
 
                   <Button
-                    onClick={() => handleSignUp(activeTab)}
+                    onClick={() => handleSignUp("admin")}
                     disabled={isLoading}
                     className="w-full h-12 bg-gradient-to-r from-purple-600 to-pink-600 dark:from-purple-500 dark:to-pink-500 hover:from-purple-700 hover:to-pink-700 dark:hover:from-purple-600 dark:hover:to-pink-600 text-white font-medium rounded-lg transition-all duration-300 transform hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isLoading ? (
-                      <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                    ) : (
-                      <ArrowRight className="w-5 h-5 mr-2" />
-                    )}
-                    {isLoading ? "Creating Account..." : `Create ${activeTab === "admin" ? "Admin" : "Driver"} Account`}
+                    {isLoading ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <Truck className="w-5 h-5 mr-2" />}
+                    {isLoading ? "Creating Account..." : "Create Admin Account"}
                   </Button>
 
                   <div className="text-center">
@@ -578,9 +485,9 @@ export default function AuthPage() {
               )}
 
               {error && (
-                <div className="mt-4 p-3 bg-red-500/10 dark:bg-red-500/5 border border-red-500/20 dark:border-red-500/10 rounded-lg">
-                  <p className="text-red-400 dark:text-red-300 text-sm text-center">{error}</p>
-                </div>
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
               )}
             </CardContent>
           </Card>
@@ -588,15 +495,15 @@ export default function AuthPage() {
           {/* Features */}
           <div className="mt-8 grid grid-cols-3 gap-4 text-center">
             <div className="text-slate-400 dark:text-slate-500">
-              <Shield className="w-6 h-6 mx-auto mb-2 text-cyan-400 dark:text-cyan-300" />
+              <Truck className="w-6 h-6 mx-auto mb-2 text-cyan-400 dark:text-cyan-300" />
               <p className="text-xs">Secure</p>
             </div>
             <div className="text-slate-400 dark:text-slate-500">
-              <Zap className="w-6 h-6 mx-auto mb-2 text-purple-400 dark:text-purple-300" />
+              <Package className="w-6 h-6 mx-auto mb-2 text-purple-400 dark:text-purple-300" />
               <p className="text-xs">Fast</p>
             </div>
             <div className="text-slate-400 dark:text-slate-500">
-              <Truck className="w-6 h-6 mx-auto mb-2 text-pink-400 dark:text-pink-300" />
+              <Users className="w-6 h-6 mx-auto mb-2 text-pink-400 dark:text-pink-300" />
               <p className="text-xs">Reliable</p>
             </div>
           </div>
@@ -622,97 +529,101 @@ export default function AuthPage() {
       </div>
 
       {/* Super Admin Login Dialog */}
-      <Dialog open={superAdminOpen} onOpenChange={setSuperAdminOpen}>
-        <DialogContent className="sm:max-w-md bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-xl border-red-700/50 dark:border-red-600/30 shadow-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-white dark:text-slate-100">
-              <div className="w-2 h-2 bg-red-500 dark:bg-red-400 rounded-full animate-pulse"></div>
-              System Administration
-            </DialogTitle>
-            <DialogDescription className="text-slate-400 dark:text-slate-500">
-              Restricted access. Authorized personnel only.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="super-admin-username" className="text-slate-300 dark:text-slate-400 text-sm font-medium">
-                Username
-              </Label>
-              <Input
-                id="super-admin-username"
-                type="text"
-                value={superAdminUsername}
-                onChange={(e) => setSuperAdminUsername(e.target.value)}
-                placeholder="Enter username"
-                disabled={superAdminLoading}
-                className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="super-admin-password" className="text-slate-300 dark:text-slate-400 text-sm font-medium">
-                Password
-              </Label>
-              <div className="relative">
-                <Input
-                  id="super-admin-password"
-                  type={showSuperAdminPassword ? "text" : "password"}
-                  value={superAdminPassword}
-                  onChange={(e) => setSuperAdminPassword(e.target.value)}
-                  placeholder="Enter password"
-                  disabled={superAdminLoading}
-                  className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20 pr-12"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowSuperAdminPassword(!showSuperAdminPassword)}
-                  disabled={superAdminLoading}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300 transition-colors"
+      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-md">
+        <div
+          className={`bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-xl border-red-700/50 dark:border-red-600/30 shadow-2xl ${superAdminOpen ? "block" : "hidden"}`}
+        >
+          <div className="p-4">
+            <h2 className="text-2xl font-bold text-white dark:text-slate-100 mb-4">System Administration</h2>
+            <p className="text-slate-400 dark:text-slate-500 mb-6">Restricted access. Authorized personnel only.</p>
+
+            <form onSubmit={handleSuperAdminLogin} className="space-y-6">
+              <div className="space-y-2">
+                <Label
+                  htmlFor="super-admin-username"
+                  className="text-slate-300 dark:text-slate-400 text-sm font-medium"
                 >
-                  {showSuperAdminPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
+                  Username
+                </Label>
+                <Input
+                  id="super-admin-username"
+                  type="text"
+                  value={superAdminUsername}
+                  onChange={(e) => setSuperAdminUsername(e.target.value)}
+                  placeholder="Enter username"
+                  disabled={superAdminLoading}
+                  className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20"
+                />
               </div>
-            </div>
-
-            {superAdminError && (
-              <div className="p-3 bg-red-500/10 dark:bg-red-500/5 border border-red-500/20 dark:border-red-500/10 rounded-lg">
-                <p className="text-sm text-red-400 dark:text-red-300">{superAdminError}</p>
+              <div className="space-y-2">
+                <Label
+                  htmlFor="super-admin-password"
+                  className="text-slate-300 dark:text-slate-400 text-sm font-medium"
+                >
+                  Password
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="super-admin-password"
+                    type={showSuperAdminPassword ? "text" : "password"}
+                    value={superAdminPassword}
+                    onChange={(e) => setSuperAdminPassword(e.target.value)}
+                    placeholder="Enter password"
+                    disabled={superAdminLoading}
+                    className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20 pr-12"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSuperAdminPassword(!showSuperAdminPassword)}
+                    disabled={superAdminLoading}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300 transition-colors"
+                  >
+                    {showSuperAdminPassword ? <Truck className="h-4 w-4" /> : <Truck className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
-            )}
 
-            <div className="flex gap-2 pt-2">
-              <Button
-                onClick={handleSuperAdminLogin}
-                disabled={superAdminLoading || !superAdminUsername || !superAdminPassword}
-                className="flex-1 bg-gradient-to-r from-red-600 to-red-700 dark:from-red-500 dark:to-red-600 hover:from-red-700 hover:to-red-800 dark:hover:from-red-600 dark:hover:to-red-700 text-white font-medium"
-              >
-                {superAdminLoading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Authenticating...
-                  </>
-                ) : (
-                  "Access System"
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setSuperAdminOpen(false)
-                  clearSuperAdminForm()
-                }}
-                disabled={superAdminLoading}
-                className="border-slate-600 dark:border-slate-700 text-slate-300 dark:text-slate-400 hover:bg-slate-800 dark:hover:bg-slate-900 hover:text-white dark:hover:text-slate-200"
-              >
-                Cancel
-              </Button>
-            </div>
+              {superAdminError && (
+                <div className="p-3 bg-red-500/10 dark:bg-red-500/5 border border-red-500/20 dark:border-red-500/10 rounded-lg">
+                  <p className="text-sm text-red-400 dark:text-red-300">{superAdminError}</p>
+                </div>
+              )}
 
-            <div className="text-xs text-slate-500 dark:text-slate-600 text-center pt-2 border-t border-slate-700 dark:border-slate-800">
-              All access attempts are monitored and logged.
-            </div>
+              <div className="flex gap-2 pt-2">
+                <Button
+                  type="submit"
+                  disabled={superAdminLoading || !superAdminUsername || !superAdminPassword}
+                  className="flex-1 bg-gradient-to-r from-red-600 to-red-700 dark:from-red-500 dark:to-red-600 hover:from-red-700 hover:to-red-800 dark:hover:from-red-600 dark:hover:to-red-700 text-white font-medium"
+                >
+                  {superAdminLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Authenticating...
+                    </>
+                  ) : (
+                    "Access System"
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSuperAdminOpen(false)
+                    clearSuperAdminForm()
+                  }}
+                  disabled={superAdminLoading}
+                  className="border-slate-600 dark:border-slate-700 text-slate-300 dark:text-slate-400 hover:bg-slate-800 dark:hover:bg-slate-900 hover:text-white dark:hover:text-slate-200"
+                >
+                  Cancel
+                </Button>
+              </div>
+
+              <div className="text-xs text-slate-500 dark:text-slate-600 text-center pt-2 border-t border-slate-700 dark:border-slate-800">
+                All access attempts are monitored and logged.
+              </div>
+            </form>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      </div>
     </div>
   )
 }

@@ -5,6 +5,5 @@ export default function AdminLayout({
 }: {
   children: React.ReactNode
 }) {
-  // Remove RouteGuard completely for now to fix the loading issue
   return <>{children}</>
 }

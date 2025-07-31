@@ -34,7 +34,7 @@ export const shopifyFulfillmentSync = {
     shopifyOrderId: string,
     orderNumber: string,
     driverId?: string,
-  ) {
+  ): Promise<ShopifyFulfillmentResult> {
     try {
       console.log(`🚀 Fulfilling Shopify order: ${shopifyOrderId} (${orderNumber})`)
 
@@ -66,8 +66,8 @@ export const shopifyFulfillmentSync = {
       }
 
       // Use the normalized Shopify order ID (without SH- prefix if it's the order number)
-      const normalizedShopifyOrderId = shopifyOrderId.includes("SH-") 
-        ? this.normalizeOrderNumber(shopifyOrderId) 
+      const normalizedShopifyOrderId = shopifyOrderId.includes("SH-")
+        ? this.normalizeOrderNumber(shopifyOrderId)
         : shopifyOrderId
 
       // Make API request to Shopify
@@ -110,7 +110,7 @@ export const shopifyFulfillmentSync = {
     }
   },
 
-  processingQueue = new Set<string>()
+  processingQueue: new Set<string>(),
 
   async queueOrderForFulfillment(orderId: string): Promise<void> {
     try {
@@ -170,9 +170,9 @@ export const shopifyFulfillmentSync = {
       console.error("❌ Error in queueOrderForFulfillment:", error)
       logError(error, { orderId, context: "queueOrderForFulfillment" })
     }
-  }
+  },
 
-  private async checkOrderStatus(
+  async checkOrderStatus(
     shopDomain: string,
     accessToken: string,
     shopifyOrderId: string,
@@ -231,7 +231,7 @@ export const shopifyFulfillmentSync = {
         error: error instanceof Error ? error.message : "Unknown error",
       }
     }
-  }
+  },
 
   async processQueuedFulfillments(): Promise<void> {
     try {
@@ -279,9 +279,9 @@ export const shopifyFulfillmentSync = {
       console.error("❌ Error processing queued fulfillments:", error)
       logError(error, { context: "processQueuedFulfillments" })
     }
-  }
+  },
 
-  private async processSingleFulfillment(task: any): Promise<void> {
+  async processSingleFulfillment(task: any): Promise<void> {
     const { id: taskId, orders: order, shopify_connections: connection } = task
 
     try {
@@ -395,7 +395,7 @@ export const shopifyFulfillmentSync = {
         })
         .eq("id", taskId)
     }
-  }
+  },
 
   async getQueueStatus() {
     const { data, error } = await supabaseServiceRole
@@ -418,5 +418,5 @@ export const shopifyFulfillmentSync = {
     )
 
     return stats
-  }
+  },
 }
