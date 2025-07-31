@@ -79,8 +79,11 @@ export default function DispatchPage() {
         return
       }
 
-      // Fetch all drivers first
-      const { data: allDriversData, error: allDriversError } = await supabase.from("drivers").select("*")
+      // Fetch drivers from user_profiles table, not drivers table
+      const { data: allDriversData, error: allDriversError } = await supabase
+        .from("user_profiles")
+        .select("*")
+        .eq("role", "driver")
 
       if (allDriversError) {
         console.error("Error fetching drivers:", allDriversError)
@@ -89,29 +92,8 @@ export default function DispatchPage() {
 
       console.log("All drivers data:", allDriversData)
 
-      // Filter drivers based on available relationship column
-      let filteredDriversData = allDriversData || []
-
-      // Check if there's a created_by column or similar for admin filtering
-      if (allDriversData && allDriversData.length > 0) {
-        const sampleDriver = allDriversData[0]
-        console.log("Available driver columns:", Object.keys(sampleDriver))
-
-        // Try different possible relationship columns
-        if ("created_by" in sampleDriver) {
-          filteredDriversData = allDriversData.filter((driver) => driver.created_by === user.id)
-          console.log("Filtering by created_by column")
-        } else if ("admin_id" in sampleDriver) {
-          filteredDriversData = allDriversData.filter((driver) => driver.admin_id === user.id)
-          console.log("Filtering by admin_id column")
-        } else if ("user_id" in sampleDriver) {
-          filteredDriversData = allDriversData.filter((driver) => driver.user_id === user.id)
-          console.log("Filtering by user_id column")
-        } else {
-          console.log("No admin relationship column found, showing all drivers for now")
-          filteredDriversData = allDriversData
-        }
-      }
+      // Filter drivers assigned to this admin
+      const filteredDriversData = allDriversData?.filter((driver) => driver.admin_id === user.id) || []
 
       console.log("Filtered drivers data:", filteredDriversData)
 
@@ -127,54 +109,38 @@ export default function DispatchPage() {
 
       // Process drivers data by matching with orders
       const processedDrivers =
-        filteredDriversData
-          ?.map((driver) => {
-            const driverOrders = ordersData?.filter((order) => order.driver_id === driver.id) || []
-            const todayOrders = driverOrders.filter(
-              (order) => order.created_at && new Date(order.created_at).toDateString() === new Date().toDateString(),
-            )
+        filteredDriversData?.map((driver) => {
+          const driverOrders = ordersData?.filter((order) => order.driver_id === driver.user_id) || []
+          const todayOrders = driverOrders.filter(
+            (order) => order.created_at && new Date(order.created_at).toDateString() === new Date().toDateString(),
+          )
 
-            // Calculate total orders assigned (not just completed)
-            const totalOrdersAssigned = driverOrders.length
-            const completedToday = todayOrders.filter((order) => order.status === "delivered").length
+          // Calculate total orders assigned (not just completed)
+          const totalOrdersAssigned = driverOrders.length
+          const completedToday = todayOrders.filter((order) => order.status === "delivered").length
 
-            // Better name resolution - prioritize actual name field
-            let driverName = "Unknown Driver"
-            if (driver.name && driver.name.trim() && driver.name !== "null" && driver.name !== "undefined") {
-              driverName = driver.name.trim()
-            } else if (driver.email && driver.email.includes("@")) {
-              // Use email prefix if no name
-              driverName = driver.email
-                .split("@")[0]
-                .replace(/[._-]/g, " ")
-                .replace(/\b\w/g, (l) => l.toUpperCase())
-            } else if (driver.id) {
-              // Last resort - use driver ID
-              driverName = `Driver ${driver.id.slice(-4)}`
-            }
+          // Use actual driver name from user_profiles
+          const driverName =
+            `${driver.first_name || ""} ${driver.last_name || ""}`.trim() || driver.email || "Unknown Driver"
 
-            console.log(`Driver ${driver.id}: name="${driver.name}", email="${driver.email}", resolved="${driverName}"`)
+          console.log(`Driver ${driver.id}: name="${driverName}", email="${driver.email}"`)
 
-            return {
-              id: driver.id || "",
-              name: driverName,
-              email: driver.email || "",
-              phone: driver.phone || undefined,
-              status: totalOrdersAssigned > 0 ? "active" : driver.status || "inactive",
-              current_location: driver.current_location || undefined,
-              avatar_url: driver.avatar_url || undefined,
-              orders_completed_today: completedToday,
-              current_route:
-                driverOrders.find((order) => ["assigned", "picked_up", "in_transit"].includes(order.status))?.id ||
-                undefined,
-              created_by: driver.created_by || undefined,
-              total_orders_assigned: totalOrdersAssigned,
-            }
-          })
-          .filter((driver) => {
-            // Only show drivers with 1 or more total orders assigned
-            return driver.total_orders_assigned > 0
-          }) || []
+          return {
+            id: driver.user_id || driver.id,
+            name: driverName,
+            email: driver.email || "",
+            phone: driver.phone || undefined,
+            status: totalOrdersAssigned > 0 ? "active" : "inactive",
+            current_location: undefined,
+            avatar_url: undefined,
+            orders_completed_today: completedToday,
+            current_route:
+              driverOrders.find((order) => ["assigned", "picked_up", "in_transit"].includes(order.status))?.id ||
+              undefined,
+            created_by: driver.admin_id,
+            total_orders_assigned: totalOrdersAssigned,
+          }
+        }) || []
 
       console.log("Processed drivers:", processedDrivers)
       setDrivers(processedDrivers)
