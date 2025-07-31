@@ -24,6 +24,7 @@ import {
   Users,
 } from "lucide-react"
 import { supabase } from "@/lib/supabase"
+import { useAuth } from "@/contexts/auth-context"
 
 interface Driver {
   id: string
@@ -35,6 +36,8 @@ interface Driver {
   avatar_url?: string
   orders_completed_today: number
   current_route?: string
+  created_by?: string
+  total_orders_assigned: number
 }
 
 interface Stats {
@@ -58,6 +61,8 @@ export default function DispatchPage() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
 
+  const { user } = useAuth()
+
   useEffect(() => {
     fetchData()
     const interval = setInterval(fetchData, 30000) // Refresh every 30 seconds
@@ -66,57 +71,133 @@ export default function DispatchPage() {
 
   const fetchData = async () => {
     try {
-      // Fetch drivers
-      const { data: driversData, error: driversError } = await supabase
-        .from("drivers")
-        .select(`
-          id,
-          name,
-          email,
-          phone,
-          status,
-          current_location,
-          avatar_url,
-          orders!orders_driver_id_fkey(id, status, created_at)
-        `)
-        .eq("status", "active")
+      console.log("Fetching dispatch data...")
 
-      if (driversError) throw driversError
+      if (!user?.id) {
+        console.log("No user ID available")
+        setLoading(false)
+        return
+      }
 
-      // Process drivers data
+      // Fetch all drivers first
+      const { data: allDriversData, error: allDriversError } = await supabase.from("drivers").select("*")
+
+      if (allDriversError) {
+        console.error("Error fetching drivers:", allDriversError)
+        throw allDriversError
+      }
+
+      console.log("All drivers data:", allDriversData)
+
+      // Filter drivers based on available relationship column
+      let filteredDriversData = allDriversData || []
+
+      // Check if there's a created_by column or similar for admin filtering
+      if (allDriversData && allDriversData.length > 0) {
+        const sampleDriver = allDriversData[0]
+        console.log("Available driver columns:", Object.keys(sampleDriver))
+
+        // Try different possible relationship columns
+        if ("created_by" in sampleDriver) {
+          filteredDriversData = allDriversData.filter((driver) => driver.created_by === user.id)
+          console.log("Filtering by created_by column")
+        } else if ("admin_id" in sampleDriver) {
+          filteredDriversData = allDriversData.filter((driver) => driver.admin_id === user.id)
+          console.log("Filtering by admin_id column")
+        } else if ("user_id" in sampleDriver) {
+          filteredDriversData = allDriversData.filter((driver) => driver.user_id === user.id)
+          console.log("Filtering by user_id column")
+        } else {
+          console.log("No admin relationship column found, showing all drivers for now")
+          filteredDriversData = allDriversData
+        }
+      }
+
+      console.log("Filtered drivers data:", filteredDriversData)
+
+      // Fetch orders separately
+      const { data: ordersData, error: ordersError } = await supabase.from("orders").select("*")
+
+      if (ordersError) {
+        console.error("Error fetching orders:", ordersError)
+        throw ordersError
+      }
+
+      console.log("Orders data:", ordersData)
+
+      // Process drivers data by matching with orders
       const processedDrivers =
-        driversData?.map((driver) => ({
-          ...driver,
-          orders_completed_today:
-            driver.orders?.filter(
-              (order) =>
-                order.status === "delivered" && new Date(order.created_at).toDateString() === new Date().toDateString(),
-            ).length || 0,
-          current_route:
-            driver.orders?.find((order) => ["assigned", "picked_up", "in_transit"].includes(order.status))?.id || null,
-        })) || []
+        filteredDriversData
+          ?.map((driver) => {
+            const driverOrders = ordersData?.filter((order) => order.driver_id === driver.id) || []
+            const todayOrders = driverOrders.filter(
+              (order) => order.created_at && new Date(order.created_at).toDateString() === new Date().toDateString(),
+            )
 
+            // Calculate total orders assigned (not just completed)
+            const totalOrdersAssigned = driverOrders.length
+            const completedToday = todayOrders.filter((order) => order.status === "delivered").length
+
+            // Better name resolution - prioritize actual name field
+            let driverName = "Unknown Driver"
+            if (driver.name && driver.name.trim() && driver.name !== "null" && driver.name !== "undefined") {
+              driverName = driver.name.trim()
+            } else if (driver.email && driver.email.includes("@")) {
+              // Use email prefix if no name
+              driverName = driver.email
+                .split("@")[0]
+                .replace(/[._-]/g, " ")
+                .replace(/\b\w/g, (l) => l.toUpperCase())
+            } else if (driver.id) {
+              // Last resort - use driver ID
+              driverName = `Driver ${driver.id.slice(-4)}`
+            }
+
+            console.log(`Driver ${driver.id}: name="${driver.name}", email="${driver.email}", resolved="${driverName}"`)
+
+            return {
+              id: driver.id || "",
+              name: driverName,
+              email: driver.email || "",
+              phone: driver.phone || undefined,
+              status: totalOrdersAssigned > 0 ? "active" : driver.status || "inactive",
+              current_location: driver.current_location || undefined,
+              avatar_url: driver.avatar_url || undefined,
+              orders_completed_today: completedToday,
+              current_route:
+                driverOrders.find((order) => ["assigned", "picked_up", "in_transit"].includes(order.status))?.id ||
+                undefined,
+              created_by: driver.created_by || undefined,
+              total_orders_assigned: totalOrdersAssigned,
+            }
+          })
+          .filter((driver) => {
+            // Only show drivers with 1 or more total orders assigned
+            return driver.total_orders_assigned > 0
+          }) || []
+
+      console.log("Processed drivers:", processedDrivers)
       setDrivers(processedDrivers)
 
-      // Fetch stats
-      const { data: ordersData, error: ordersError } = await supabase
-        .from("orders")
-        .select("id, status, created_at, driver_id")
-
-      if (ordersError) throw ordersError
-
+      // Calculate stats from orders data (only for current admin's drivers)
       const today = new Date().toDateString()
-      const todayOrders = ordersData?.filter((order) => new Date(order.created_at).toDateString() === today) || []
+      const adminDriverIds = processedDrivers.map((d) => d.id)
+      const adminOrders = ordersData?.filter((order) => adminDriverIds.includes(order.driver_id)) || []
+      const todayOrders = adminOrders.filter(
+        (order) => order.created_at && new Date(order.created_at).toDateString() === today,
+      )
 
-      setStats({
+      const newStats = {
         activeDrivers: processedDrivers.filter((d) => d.status === "active").length,
         completedRoutes: todayOrders.filter((order) => order.status === "delivered").length,
         totalOrders: todayOrders.length,
         pendingOrders: todayOrders.filter((order) =>
-          ["pending", "assigned", "picked_up", "in_transit"].includes(order.status),
+          ["pending", "assigned", "picked_up", "in_transit"].includes(order.status || ""),
         ).length,
-      })
+      }
 
+      console.log("Calculated stats:", newStats)
+      setStats(newStats)
       setLastUpdated(new Date())
     } catch (error) {
       console.error("Error fetching dispatch data:", error)
@@ -126,9 +207,14 @@ export default function DispatchPage() {
   }
 
   const filteredDrivers = drivers.filter((driver) => {
+    // Add null checks for all string operations
+    const driverName = driver.name || ""
+    const driverEmail = driver.email || ""
+    const searchTermLower = searchTerm.toLowerCase()
+
     const matchesSearch =
-      driver.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      driver.email.toLowerCase().includes(searchTerm.toLowerCase())
+      driverName.toLowerCase().includes(searchTermLower) || driverEmail.toLowerCase().includes(searchTermLower)
+
     const matchesFilter = filterStatus === "all" || driver.status === filterStatus
     return matchesSearch && matchesFilter
   })
@@ -153,6 +239,15 @@ export default function DispatchPage() {
       default:
         return "bg-gray-500"
     }
+  }
+
+  const getDriverInitials = (name: string) => {
+    if (!name) return "?"
+    return name
+      .split(" ")
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase()
   }
 
   return (
@@ -276,6 +371,7 @@ export default function DispatchPage() {
                       <div className="text-center py-8 text-muted-foreground">
                         <Users className="h-12 w-12 mx-auto mb-4 opacity-50" />
                         <p>No drivers found matching your criteria</p>
+                        <p className="text-sm mt-2">Only drivers with orders are shown</p>
                       </div>
                     ) : (
                       filteredDrivers.map((driver) => (
@@ -290,12 +386,7 @@ export default function DispatchPage() {
                             <div className="relative">
                               <Avatar className="h-10 w-10">
                                 <AvatarImage src={driver.avatar_url || "/placeholder.svg"} />
-                                <AvatarFallback>
-                                  {driver.name
-                                    .split(" ")
-                                    .map((n) => n[0])
-                                    .join("")}
-                                </AvatarFallback>
+                                <AvatarFallback>{getDriverInitials(driver.name)}</AvatarFallback>
                               </Avatar>
                               <div
                                 className={`absolute -bottom-1 -right-1 h-3 w-3 rounded-full border-2 border-background ${getStatusColor(driver.status)}`}
@@ -304,20 +395,23 @@ export default function DispatchPage() {
                             <div>
                               <div className="font-medium">{driver.name}</div>
                               <div className="text-sm text-muted-foreground">
-                                {driver.current_route ? `Route ${driver.current_route}` : "Available"}
+                                {driver.current_route ? `Route #${driver.current_route.slice(-8)}` : "Available"}
                               </div>
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
                             <Badge variant={driver.status === "active" ? "default" : "secondary"}>
-                              {driver.status === "active" ? "Route Completed" : driver.status}
+                              {driver.status === "active" ? "Active" : driver.status}
                             </Badge>
                             <div className="text-sm text-muted-foreground">
-                              {driver.orders_completed_today}/1 orders
+                              {driver.total_orders_assigned} total orders | {driver.orders_completed_today} completed
+                              today
                             </div>
-                            <Badge variant="outline" className="text-green-600">
-                              ✓ 3hrs Complete
-                            </Badge>
+                            {driver.orders_completed_today > 0 && (
+                              <Badge variant="outline" className="text-green-600">
+                                ✓ Complete
+                              </Badge>
+                            )}
                           </div>
                           <div className="flex gap-1">
                             <Button size="sm" variant="ghost">
@@ -384,16 +478,11 @@ export default function DispatchPage() {
                     <div className="flex items-center gap-3">
                       <Avatar className="h-12 w-12">
                         <AvatarImage src={selectedDriver.avatar_url || "/placeholder.svg"} />
-                        <AvatarFallback>
-                          {selectedDriver.name
-                            .split(" ")
-                            .map((n) => n[0])
-                            .join("")}
-                        </AvatarFallback>
+                        <AvatarFallback>{getDriverInitials(selectedDriver.name)}</AvatarFallback>
                       </Avatar>
                       <div>
                         <div className="font-medium">{selectedDriver.name}</div>
-                        <div className="text-sm text-muted-foreground">{selectedDriver.email}</div>
+                        <div className="text-sm text-muted-foreground">{selectedDriver.email || "No email"}</div>
                       </div>
                     </div>
 
@@ -405,12 +494,18 @@ export default function DispatchPage() {
                         </Badge>
                       </div>
                       <div className="flex justify-between">
+                        <span className="text-sm text-muted-foreground">Total Orders</span>
+                        <span className="text-sm font-medium">{selectedDriver.total_orders_assigned}</span>
+                      </div>
+                      <div className="flex justify-between">
                         <span className="text-sm text-muted-foreground">Orders Today</span>
                         <span className="text-sm font-medium">{selectedDriver.orders_completed_today}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-sm text-muted-foreground">Current Route</span>
-                        <span className="text-sm font-medium">{selectedDriver.current_route || "None"}</span>
+                        <span className="text-sm font-medium">
+                          {selectedDriver.current_route ? `#${selectedDriver.current_route.slice(-8)}` : "None"}
+                        </span>
                       </div>
                       {selectedDriver.phone && (
                         <div className="flex justify-between">

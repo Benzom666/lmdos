@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, Truck, Package, Users } from "lucide-react"
+import { Loader2, Truck, Package, Users, Eye, EyeOff } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 
 export default function AuthPage() {
@@ -149,18 +149,41 @@ export default function AuthPage() {
 
       console.log("🔐 Attempting sign in:", email)
 
-      // Configure session persistence based on "Keep me logged in" checkbox
-      const { error: signInError } = await signIn(email, password)
+      const { data, error: signInError } = await signIn(email, password)
 
       if (signInError) {
-        setError(signInError.message || "Failed to sign in")
+        console.error("❌ Sign in failed:", signInError)
+
+        // Provide user-friendly error messages
+        let userMessage = "Failed to sign in"
+
+        if (signInError.message) {
+          if (signInError.message.includes("Invalid login credentials")) {
+            userMessage = "Invalid email or password. Please check your credentials and try again."
+          } else if (signInError.message.includes("Email not confirmed")) {
+            userMessage = "Please check your email and confirm your account before signing in."
+          } else if (signInError.message.includes("Too many requests")) {
+            userMessage = "Too many login attempts. Please wait a moment and try again."
+          } else if (signInError.message.includes("Supabase configuration")) {
+            userMessage = "Service configuration error. Please contact support."
+          } else {
+            userMessage = signInError.message
+          }
+        }
+
+        setError(userMessage)
         return
       }
 
-      console.log("✅ Sign in successful")
+      if (data?.user) {
+        console.log("✅ Sign in successful")
+        // The useEffect will handle the redirect based on user role
+      } else {
+        setError("Sign in failed - no user data received")
+      }
     } catch (err) {
-      console.error("❌ Sign in error:", err)
-      setError("An unexpected error occurred during sign in")
+      console.error("❌ Unexpected sign in error:", err)
+      setError("An unexpected error occurred during sign in. Please try again.")
     } finally {
       setIsLoading(false)
     }
@@ -339,7 +362,7 @@ export default function AuthPage() {
                           onClick={() => setShowPassword(!showPassword)}
                           className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300 transition-colors"
                         >
-                          {showPassword ? <Truck className="w-5 h-5" /> : <Truck className="w-5 h-5" />}
+                          {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                         </button>
                       </div>
                     </div>
@@ -372,6 +395,7 @@ export default function AuthPage() {
 
                   <div className="text-center">
                     <button
+                      type="button"
                       onClick={switchToSignup}
                       className="text-slate-400 dark:text-slate-500 hover:text-cyan-400 dark:hover:text-cyan-300 text-sm transition-colors duration-300"
                     >
@@ -485,7 +509,7 @@ export default function AuthPage() {
               )}
 
               {error && (
-                <Alert variant="destructive">
+                <Alert variant="destructive" className="mt-4">
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}
@@ -529,101 +553,108 @@ export default function AuthPage() {
       </div>
 
       {/* Super Admin Login Dialog */}
-      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-md">
-        <div
-          className={`bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-xl border-red-700/50 dark:border-red-600/30 shadow-2xl ${superAdminOpen ? "block" : "hidden"}`}
-        >
-          <div className="p-4">
-            <h2 className="text-2xl font-bold text-white dark:text-slate-100 mb-4">System Administration</h2>
-            <p className="text-slate-400 dark:text-slate-500 mb-6">Restricted access. Authorized personnel only.</p>
+      {superAdminOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-md bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-xl border-red-700/50 dark:border-red-600/30 shadow-2xl">
+            <CardContent className="p-6">
+              <h2 className="text-2xl font-bold text-white dark:text-slate-100 mb-4">System Administration</h2>
+              <p className="text-slate-400 dark:text-slate-500 mb-6">Restricted access. Authorized personnel only.</p>
 
-            <form onSubmit={handleSuperAdminLogin} className="space-y-6">
-              <div className="space-y-2">
-                <Label
-                  htmlFor="super-admin-username"
-                  className="text-slate-300 dark:text-slate-400 text-sm font-medium"
-                >
-                  Username
-                </Label>
-                <Input
-                  id="super-admin-username"
-                  type="text"
-                  value={superAdminUsername}
-                  onChange={(e) => setSuperAdminUsername(e.target.value)}
-                  placeholder="Enter username"
-                  disabled={superAdminLoading}
-                  className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label
-                  htmlFor="super-admin-password"
-                  className="text-slate-300 dark:text-slate-400 text-sm font-medium"
-                >
-                  Password
-                </Label>
-                <div className="relative">
-                  <Input
-                    id="super-admin-password"
-                    type={showSuperAdminPassword ? "text" : "password"}
-                    value={superAdminPassword}
-                    onChange={(e) => setSuperAdminPassword(e.target.value)}
-                    placeholder="Enter password"
-                    disabled={superAdminLoading}
-                    className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20 pr-12"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowSuperAdminPassword(!showSuperAdminPassword)}
-                    disabled={superAdminLoading}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300 transition-colors"
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  handleSuperAdminLogin()
+                }}
+                className="space-y-6"
+              >
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="super-admin-username"
+                    className="text-slate-300 dark:text-slate-400 text-sm font-medium"
                   >
-                    {showSuperAdminPassword ? <Truck className="h-4 w-4" /> : <Truck className="h-4 w-4" />}
-                  </button>
+                    Username
+                  </Label>
+                  <Input
+                    id="super-admin-username"
+                    type="text"
+                    value={superAdminUsername}
+                    onChange={(e) => setSuperAdminUsername(e.target.value)}
+                    placeholder="Enter username"
+                    disabled={superAdminLoading}
+                    className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20"
+                  />
                 </div>
-              </div>
-
-              {superAdminError && (
-                <div className="p-3 bg-red-500/10 dark:bg-red-500/5 border border-red-500/20 dark:border-red-500/10 rounded-lg">
-                  <p className="text-sm text-red-400 dark:text-red-300">{superAdminError}</p>
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="super-admin-password"
+                    className="text-slate-300 dark:text-slate-400 text-sm font-medium"
+                  >
+                    Password
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="super-admin-password"
+                      type={showSuperAdminPassword ? "text" : "password"}
+                      value={superAdminPassword}
+                      onChange={(e) => setSuperAdminPassword(e.target.value)}
+                      placeholder="Enter password"
+                      disabled={superAdminLoading}
+                      className="bg-slate-800/50 dark:bg-slate-900/50 border-slate-600 dark:border-slate-700 text-white dark:text-slate-200 placeholder:text-slate-500 dark:placeholder:text-slate-600 focus:border-red-400 dark:focus:border-red-500 focus:ring-red-400/20 dark:focus:ring-red-500/20 pr-12"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSuperAdminPassword(!showSuperAdminPassword)}
+                      disabled={superAdminLoading}
+                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 dark:text-slate-500 hover:text-white dark:hover:text-slate-300 transition-colors"
+                    >
+                      {showSuperAdminPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
                 </div>
-              )}
 
-              <div className="flex gap-2 pt-2">
-                <Button
-                  type="submit"
-                  disabled={superAdminLoading || !superAdminUsername || !superAdminPassword}
-                  className="flex-1 bg-gradient-to-r from-red-600 to-red-700 dark:from-red-500 dark:to-red-600 hover:from-red-700 hover:to-red-800 dark:hover:from-red-600 dark:hover:to-red-700 text-white font-medium"
-                >
-                  {superAdminLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Authenticating...
-                    </>
-                  ) : (
-                    "Access System"
-                  )}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setSuperAdminOpen(false)
-                    clearSuperAdminForm()
-                  }}
-                  disabled={superAdminLoading}
-                  className="border-slate-600 dark:border-slate-700 text-slate-300 dark:text-slate-400 hover:bg-slate-800 dark:hover:bg-slate-900 hover:text-white dark:hover:text-slate-200"
-                >
-                  Cancel
-                </Button>
-              </div>
+                {superAdminError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{superAdminError}</AlertDescription>
+                  </Alert>
+                )}
 
-              <div className="text-xs text-slate-500 dark:text-slate-600 text-center pt-2 border-t border-slate-700 dark:border-slate-800">
-                All access attempts are monitored and logged.
-              </div>
-            </form>
-          </div>
+                <div className="flex gap-2 pt-2">
+                  <Button
+                    type="submit"
+                    disabled={superAdminLoading || !superAdminUsername || !superAdminPassword}
+                    className="flex-1 bg-gradient-to-r from-red-600 to-red-700 dark:from-red-500 dark:to-red-600 hover:from-red-700 hover:to-red-800 dark:hover:from-red-600 dark:hover:to-red-700 text-white font-medium"
+                  >
+                    {superAdminLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Authenticating...
+                      </>
+                    ) : (
+                      "Access System"
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setSuperAdminOpen(false)
+                      clearSuperAdminForm()
+                    }}
+                    disabled={superAdminLoading}
+                    className="border-slate-600 dark:border-slate-700 text-slate-300 dark:text-slate-400 hover:bg-slate-800 dark:hover:bg-slate-900 hover:text-white dark:hover:text-slate-200"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+
+                <div className="text-xs text-slate-500 dark:text-slate-600 text-center pt-2 border-t border-slate-700 dark:border-slate-800">
+                  All access attempts are monitored and logged.
+                </div>
+              </form>
+            </CardContent>
+          </Card>
         </div>
-      </div>
+      )}
     </div>
   )
 }
