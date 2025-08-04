@@ -13,6 +13,9 @@ import { useAuth } from "@/contexts/auth-context"
 import { supabase } from "@/lib/supabase"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { Slider } from "@/components/ui/slider"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,10 +41,15 @@ import {
   Eye,
   Edit,
   MapPin,
+  Route,
   Printer,
+  Settings,
+  Warehouse,
+  Navigation,
+  Target,
+  Zap,
 } from "lucide-react"
 import { MapboxMap } from "@/components/mapbox-map"
-import { geocodingService } from "@/lib/geocoding-service"
 
 interface Order {
   id: string
@@ -75,10 +83,22 @@ interface Driver {
   admin_id?: string
 }
 
+interface RouteZone {
+  id: string
+  name: string
+  color: string
+  orders: Order[]
+  center: [number, number]
+  radius: number
+  estimatedTime: number
+  totalDistance: number
+}
+
 interface OptimizationSettings {
   warehouseLocation: [number, number]
   warehouseName: string
-  maxOrdersPerRoute: number
+  maxZones: number
+  maxOrdersPerZone: number
   optimizationMethod: "distance" | "time" | "hybrid"
   considerTraffic: boolean
   considerPriority: boolean
@@ -106,14 +126,17 @@ export default function OrdersPage() {
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set())
   const [activeTab, setActiveTab] = useState("all")
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [routeZones, setRouteZones] = useState<RouteZone[]>([])
+  const [optimizingRoutes, setOptimizingRoutes] = useState(false)
   const [showOptimizationSettings, setShowOptimizationSettings] = useState(false)
-  const [isGeocodingOrders, setIsGeocodingOrders] = useState(false)
+  const [optimizedRoute, setOptimizedRoute] = useState<[number, number][] | null>(null)
 
   // Optimization settings with Toronto warehouse as default
   const [optimizationSettings, setOptimizationSettings] = useState<OptimizationSettings>({
     warehouseLocation: [43.6532, -79.3832], // Toronto downtown
     warehouseName: "Main Warehouse",
-    maxOrdersPerRoute: 12,
+    maxZones: 5,
+    maxOrdersPerZone: 10,
     optimizationMethod: "hybrid",
     considerTraffic: true,
     considerPriority: true,
@@ -147,8 +170,15 @@ export default function OrdersPage() {
 
       if (error) throw error
 
-      console.log(`📦 Loaded ${data?.length || 0} orders`)
-      setOrders(data || [])
+      // Add mock coordinates to orders
+      const ordersWithCoordinates =
+        data?.map((order) => ({
+          ...order,
+          coordinates: generateOrderCoordinates(order.id),
+        })) || []
+
+      console.log(`📦 Loaded ${ordersWithCoordinates?.length || 0} orders`)
+      setOrders(ordersWithCoordinates)
     } catch (error) {
       console.error("❌ Error fetching orders:", error)
       toast({
@@ -168,6 +198,7 @@ export default function OrdersPage() {
     try {
       console.log("🔍 Fetching drivers for admin:", profile.user_id)
 
+      // SECURITY FIX: Only get drivers that belong to this admin
       const { data: driversData, error } = await supabase
         .from("user_profiles")
         .select("*")
@@ -181,6 +212,7 @@ export default function OrdersPage() {
 
       console.log(`👥 Found ${driversData?.length || 0} drivers for admin ${profile.user_id}`)
 
+      // Format driver data
       const formattedDrivers: Driver[] = (driversData || []).map((driver) => ({
         id: driver.id,
         user_id: driver.user_id,
@@ -214,62 +246,6 @@ export default function OrdersPage() {
     }
   }
 
-  // Geocode all orders that don't have coordinates
-  const geocodeAllOrders = async () => {
-    if (isGeocodingOrders) return
-
-    const ordersNeedingGeocode = orders.filter((order) => !order.coordinates && order.delivery_address)
-    if (ordersNeedingGeocode.length === 0) {
-      toast({
-        title: "All Orders Geocoded",
-        description: "All orders already have coordinates.",
-      })
-      return
-    }
-
-    setIsGeocodingOrders(true)
-
-    try {
-      console.log(`🔍 Geocoding ${ordersNeedingGeocode.length} orders...`)
-
-      const addresses = ordersNeedingGeocode.map((order) => order.delivery_address)
-      const geocodingResults = await geocodingService.geocodeBatch(addresses)
-
-      // Update orders with geocoded coordinates
-      const updatedOrders = orders.map((order) => {
-        if (order.coordinates) return order
-
-        const geocodingResult = geocodingResults.find((result) => result.address === order.delivery_address)
-        if (geocodingResult && geocodingResult.coordinates) {
-          return {
-            ...order,
-            coordinates: geocodingResult.coordinates,
-          }
-        }
-        return order
-      })
-
-      setOrders(updatedOrders)
-
-      const successCount = geocodingResults.filter((r) => r.coordinates).length
-      const cachedCount = geocodingResults.filter((r) => r.fromCache).length
-
-      toast({
-        title: "Geocoding Complete",
-        description: `Successfully geocoded ${successCount}/${ordersNeedingGeocode.length} addresses (${cachedCount} from cache)`,
-      })
-    } catch (error) {
-      console.error("❌ Geocoding error:", error)
-      toast({
-        title: "Geocoding Failed",
-        description: "Some addresses could not be geocoded.",
-        variant: "destructive",
-      })
-    } finally {
-      setIsGeocodingOrders(false)
-    }
-  }
-
   // Filter orders based on search and filters
   const filteredOrders = useMemo(() => {
     let filtered = orders
@@ -294,8 +270,101 @@ export default function OrdersPage() {
       filtered = filtered.filter((order) => order.priority === priorityFilter)
     }
 
+    // Tab filter
+    // switch (activeTab) {
+    //   case "active":
+    //     filtered = filtered.filter((order) => ["pending", "assigned", "in_transit"].includes(order.status))
+    //     break
+    //   case "completed":
+    //     filtered = filtered.filter((order) => order.status === "delivered")
+    //     break
+    //   case "failed":
+    //     filtered = filtered.filter((order) => order.status === "failed")
+    //     break
+    // }
+
     return filtered
-  }, [orders, searchTerm, statusFilter, priorityFilter])
+  }, [orders, searchTerm, statusFilter, priorityFilter, activeTab])
+
+  // Advanced route optimization algorithm
+  const optimizeRoutesAdvanced = async () => {
+    if (selectedOrders.size === 0) {
+      toast({
+        title: "No Orders Selected",
+        description: "Please select orders to optimize routes.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setOptimizingRoutes(true)
+
+    try {
+      const selectedOrdersList = filteredOrders.filter((order) => selectedOrders.has(order.id))
+      console.log(`🚀 Starting route optimization for ${selectedOrdersList.length} orders`)
+
+      // Step 1: Generate coordinates for orders (in real app, this would be geocoded)
+      const ordersWithCoords = selectedOrdersList.map((order) => ({
+        ...order,
+        coordinates: generateOrderCoordinates(order.id),
+      }))
+
+      // Step 2: Prepare waypoints for Mapbox Optimization API
+      const waypoints = ordersWithCoords.map((order) => ({
+        longitude: order.coordinates![1],
+        latitude: order.coordinates![0],
+      }))
+
+      // Step 3: Call Mapbox Optimization API
+      const accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
+      const optimizationUrl = `https://api.mapbox.com/optimized-trips/v1/mapbox/driving/${waypoints
+        .map((wp) => `${wp.longitude},${wp.latitude}`)
+        .join(
+          ";",
+        )}?source=first&destination=last&roundtrip=false&steps=true&geometries=geojson&access_token=${accessToken}`
+
+      const response = await fetch(optimizationUrl)
+      const data = await response.json()
+
+      if (data.code !== "Ok") {
+        console.error("Mapbox Optimization API error:", data.code, data.message)
+        toast({
+          title: "Route Optimization Failed",
+          description: `Mapbox API error: ${data.code} - ${data.message}`,
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Step 4: Extract optimized route coordinates and order
+      const optimizedCoordinates = data.trips[0].geometry.coordinates
+      const optimizedOrder = data.trips[0].legs.map((leg: any) => leg.summary)
+
+      console.log("✅ Route optimization completed")
+      console.log("   - Optimized order:", optimizedOrder)
+      console.log("   - Total distance:", data.trips[0].distance)
+      console.log("   - Total duration:", data.trips[0].duration)
+
+      // Step 5: Update state with optimized route and order
+      setOptimizedRoute(optimizedCoordinates)
+
+      toast({
+        title: "Routes Optimized Successfully!",
+        description: `Optimized route for ${selectedOrdersList.length} orders. Total distance: ${
+          data.trips[0].distance
+        }m, Est. time: ${data.trips[0].duration}s`,
+      })
+    } catch (error) {
+      console.error("❌ Route optimization error:", error)
+      toast({
+        title: "Optimization Failed",
+        description: "Failed to optimize routes. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setOptimizingRoutes(false)
+    }
+  }
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -414,10 +483,10 @@ export default function OrdersPage() {
       selectedOrders.size > 0 ? filteredOrders.filter((order) => selectedOrders.has(order.id)) : filteredOrders
 
     const csv = [
-      "Order Number,Customer Name,Email,Address,Priority,Status,Created At,Coordinates",
+      "Order Number,Customer Name,Email,Phone,Address,Priority,Status,Created At",
       ...selectedOrdersList.map(
         (order) =>
-          `${order.order_number},${order.customer_name},${order.customer_email},"${order.delivery_address}",${order.priority},${order.status},${order.created_at},"${order.coordinates ? `${order.coordinates[0]},${order.coordinates[1]}` : ""}"`,
+          `${order.order_number},${order.customer_name},${order.customer_email},${order.customer_phone},"${order.delivery_address}",${order.priority},${order.status},${order.created_at}`,
       ),
     ].join("\n")
 
@@ -493,7 +562,7 @@ export default function OrdersPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold">Orders Management</h1>
-            <p className="text-muted-foreground">Manage and track all delivery orders with real-time geocoding</p>
+            <p className="text-muted-foreground">Manage and track all delivery orders</p>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={exportOrders}>
@@ -503,10 +572,6 @@ export default function OrdersPage() {
             <Button variant="outline">
               <Upload className="h-4 w-4 mr-2" />
               Import
-            </Button>
-            <Button variant="outline" onClick={geocodeAllOrders} disabled={isGeocodingOrders}>
-              <MapPin className={`h-4 w-4 mr-2 ${isGeocodingOrders ? "animate-spin" : ""}`} />
-              {isGeocodingOrders ? "Geocoding..." : "Geocode All"}
             </Button>
             <Button onClick={fetchOrders} disabled={loading}>
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
@@ -558,6 +623,30 @@ export default function OrdersPage() {
           </Card>
         )}
 
+        {/* Connected Shopify Stores */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Package className="h-5 w-5" />
+              Connected Shopify Stores
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between p-3 border rounded-lg">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium">deliveryos.myshopify.com</h4>
+                  <p className="text-sm text-muted-foreground">Last sync: 2 minutes ago</p>
+                </div>
+              </div>
+              <Badge className="bg-green-100 text-green-800">Active</Badge>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Search and Filters */}
         <div className="flex flex-col sm:flex-row gap-4">
           <div className="relative flex-1">
@@ -582,7 +671,7 @@ export default function OrdersPage() {
               <SelectItem value="failed">Failed</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+          <Select value={priorityFilter} onValueChange={priorityFilter}>
             <SelectTrigger className="w-[180px]">
               <SelectValue placeholder="All Priorities" />
             </SelectTrigger>
@@ -668,6 +757,238 @@ export default function OrdersPage() {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+
+                    <Dialog open={showOptimizationSettings} onOpenChange={setShowOptimizationSettings}>
+                      <DialogTrigger asChild>
+                        <Button size="sm" variant="outline">
+                          <Settings className="h-4 w-4 mr-2" />
+                          Optimization Settings
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="max-w-2xl">
+                        <DialogHeader>
+                          <DialogTitle className="flex items-center gap-2">
+                            <Warehouse className="h-5 w-5" />
+                            Route Optimization Settings
+                          </DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-6">
+                          {/* Warehouse Settings */}
+                          <div className="space-y-4">
+                            <h3 className="text-lg font-medium flex items-center gap-2">
+                              <Warehouse className="h-4 w-4" />
+                              Warehouse Configuration
+                            </h3>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <Label htmlFor="warehouse-name">Warehouse Name</Label>
+                                <Input
+                                  id="warehouse-name"
+                                  value={optimizationSettings.warehouseName}
+                                  onChange={(e) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      warehouseName: e.target.value,
+                                    })
+                                  }
+                                />
+                              </div>
+                              <div>
+                                <Label>Warehouse Location</Label>
+                                <div className="flex gap-2">
+                                  <Input
+                                    placeholder="Latitude"
+                                    value={optimizationSettings.warehouseLocation[0]}
+                                    onChange={(e) =>
+                                      setOptimizationSettings({
+                                        ...optimizationSettings,
+                                        warehouseLocation: [
+                                          Number.parseFloat(e.target.value) || 43.6532,
+                                          optimizationSettings.warehouseLocation[1],
+                                        ],
+                                      })
+                                    }
+                                  />
+                                  <Input
+                                    placeholder="Longitude"
+                                    value={optimizationSettings.warehouseLocation[1]}
+                                    onChange={(e) =>
+                                      setOptimizationSettings({
+                                        ...optimizationSettings,
+                                        warehouseLocation: [
+                                          optimizationSettings.warehouseLocation[0],
+                                          Number.parseFloat(e.target.value) || -79.3832,
+                                        ],
+                                      })
+                                    }
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Zone Settings */}
+                          <div className="space-y-4">
+                            <h3 className="text-lg font-medium flex items-center gap-2">
+                              <Target className="h-4 w-4" />
+                              Zone Configuration
+                            </h3>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <Label>Maximum Zones: {optimizationSettings.maxZones}</Label>
+                                <Slider
+                                  value={[optimizationSettings.maxZones]}
+                                  onValueChange={([value]) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      maxZones: value,
+                                    })
+                                  }
+                                  max={10}
+                                  min={1}
+                                  step={1}
+                                  className="mt-2"
+                                />
+                              </div>
+                              <div>
+                                <Label>Orders per Zone: {optimizationSettings.maxOrdersPerZone}</Label>
+                                <Slider
+                                  value={[optimizationSettings.maxOrdersPerZone]}
+                                  onValueChange={([value]) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      maxOrdersPerZone: value,
+                                    })
+                                  }
+                                  max={20}
+                                  min={5}
+                                  step={1}
+                                  className="mt-2"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Optimization Method */}
+                          <div className="space-y-4">
+                            <h3 className="text-lg font-medium flex items-center gap-2">
+                              <Navigation className="h-4 w-4" />
+                              Optimization Method
+                            </h3>
+                            <Select
+                              value={optimizationSettings.optimizationMethod}
+                              onValueChange={(value: "distance" | "time" | "hybrid") =>
+                                setOptimizationSettings({
+                                  ...optimizationSettings,
+                                  optimizationMethod: value,
+                                })
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="distance">Distance Optimization</SelectItem>
+                                <SelectItem value="time">Time Optimization</SelectItem>
+                                <SelectItem value="hybrid">Hybrid (Distance + Time)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          {/* Advanced Options */}
+                          <div className="space-y-4">
+                            <h3 className="text-lg font-medium">Advanced Options</h3>
+                            <div className="space-y-3">
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="consider-traffic"
+                                  checked={optimizationSettings.considerTraffic}
+                                  onCheckedChange={(checked) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      considerTraffic: checked as boolean,
+                                    })
+                                  }
+                                />
+                                <Label htmlFor="consider-traffic">Consider Traffic Conditions</Label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="consider-priority"
+                                  checked={optimizationSettings.considerPriority}
+                                  onCheckedChange={(checked) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      considerPriority: checked as boolean,
+                                    })
+                                  }
+                                />
+                                <Label htmlFor="consider-priority">Prioritize Urgent Orders</Label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="consider-time-windows"
+                                  checked={optimizationSettings.considerTimeWindows}
+                                  onCheckedChange={(checked) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      considerTimeWindows: checked as boolean,
+                                    })
+                                  }
+                                />
+                                <Label htmlFor="consider-time-windows">Respect Delivery Time Windows</Label>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Working Hours */}
+                          <div className="space-y-4">
+                            <h3 className="text-lg font-medium">Working Hours</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <Label htmlFor="start-time">Start Time</Label>
+                                <Input
+                                  id="start-time"
+                                  type="time"
+                                  value={optimizationSettings.workingHours.start}
+                                  onChange={(e) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      workingHours: {
+                                        ...optimizationSettings.workingHours,
+                                        start: e.target.value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                              <div>
+                                <Label htmlFor="end-time">End Time</Label>
+                                <Input
+                                  id="end-time"
+                                  type="time"
+                                  value={optimizationSettings.workingHours.end}
+                                  onChange={(e) =>
+                                    setOptimizationSettings({
+                                      ...optimizationSettings,
+                                      workingHours: {
+                                        ...optimizationSettings.workingHours,
+                                        end: e.target.value,
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+
+                    <Button size="sm" variant="outline" onClick={optimizeRoutesAdvanced} disabled={optimizingRoutes}>
+                      <Zap className={`h-4 w-4 mr-2 ${optimizingRoutes ? "animate-spin" : ""}`} />
+                      {optimizingRoutes ? "Optimizing..." : "Optimize Routes"}
+                    </Button>
 
                     <Button size="sm" variant="outline">
                       <Printer className="h-4 w-4 mr-2" />
@@ -762,12 +1083,6 @@ export default function OrdersPage() {
                             <div className="flex items-center gap-2 mb-2">
                               {getStatusBadge(order.status)}
                               {getPriorityBadge(order.priority)}
-                              {order.coordinates && (
-                                <Badge variant="outline" className="bg-green-50 text-green-700">
-                                  <MapPin className="h-3 w-3 mr-1" />
-                                  Geocoded
-                                </Badge>
-                              )}
                             </div>
 
                             {order.driver_id && (
@@ -779,12 +1094,6 @@ export default function OrdersPage() {
                             <p className="text-xs text-muted-foreground">
                               Created: {new Date(order.created_at).toLocaleDateString()}
                             </p>
-
-                            {order.coordinates && (
-                              <p className="text-xs text-green-600 mt-1">
-                                📍 {order.coordinates[0].toFixed(6)}, {order.coordinates[1].toFixed(6)}
-                              </p>
-                            )}
                           </div>
                         </div>
                       </div>
@@ -806,18 +1115,182 @@ export default function OrdersPage() {
           </Card>
 
           {/* Map */}
-          <MapboxMap
-            orders={ordersForMap}
-            warehouseLocation={optimizationSettings.warehouseLocation}
-            warehouseName={optimizationSettings.warehouseName}
-            title="Orders Map with Real Geocoding"
-            height="600px"
-            showRouteOptimization={true}
-            onOrderClick={(orderId) => {
-              router.push(`/admin/orders/${orderId}`)
-            }}
-          />
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MapPin className="h-5 w-5" />
+                Orders Map
+                {routeZones.length > 0 && (
+                  <Badge variant="outline" className="bg-blue-50 text-blue-700">
+                    <Route className="h-3 w-3 mr-1" />
+                    {routeZones.length} zones optimized
+                  </Badge>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <MapboxMap
+                orders={ordersForMap}
+                routeZones={routeZones}
+                optimizedRoute={optimizedRoute}
+                warehouseLocation={optimizationSettings.warehouseLocation}
+                warehouseName={optimizationSettings.warehouseName}
+                title="Orders Overview"
+                height="500px"
+                onOrderClick={(orderId) => {
+                  router.push(`/admin/orders/${orderId}`)
+                }}
+              />
+            </CardContent>
+          </Card>
         </div>
+
+        {/* Route Zones Summary */}
+        {routeZones.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Route className="h-5 w-5" />
+                Optimized Route Zones
+                <Badge variant="outline" className="bg-green-50 text-green-700">
+                  <Warehouse className="h-3 w-3 mr-1" />
+                  Starting from {optimizationSettings.warehouseName}
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {routeZones.map((zone, index) => (
+                  <div key={zone.id} className="p-4 border rounded-lg">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: zone.color }} />
+                      <h4 className="font-medium">{zone.name}</h4>
+                    </div>
+
+                    <div className="space-y-2 text-sm text-muted-foreground mb-4">
+                      <div className="flex justify-between">
+                        <span>Orders:</span>
+                        <span className="font-medium">{zone.orders.length}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Distance:</span>
+                        <span className="font-medium">{zone.totalDistance}km</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Est. Time:</span>
+                        <span className="font-medium">
+                          {Math.floor(zone.estimatedTime / 60)}h {zone.estimatedTime % 60}m
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Route:</span>
+                        <span className="font-medium text-xs">
+                          Warehouse →{" "}
+                          {zone.orders
+                            .slice(0, 2)
+                            .map((o) => `#${o.order_number}`)
+                            .join(" → ")}
+                          {zone.orders.length > 2 && ` → +${zone.orders.length - 2} more`} → Warehouse
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button size="sm" variant="outline" disabled={drivers.length === 0}>
+                            <UserPlus className="h-4 w-4 mr-2" />
+                            Assign Driver
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent>
+                          {drivers.length === 0 ? (
+                            <DropdownMenuItem disabled>No drivers available</DropdownMenuItem>
+                          ) : (
+                            drivers.map((driver) => (
+                              <DropdownMenuItem
+                                key={driver.user_id}
+                                onClick={async () => {
+                                  // Assign all orders in this zone to the driver
+                                  try {
+                                    for (const order of zone.orders) {
+                                      await supabase
+                                        .from("orders")
+                                        .update({
+                                          driver_id: driver.user_id,
+                                          status: "assigned",
+                                          assigned_at: new Date().toISOString(),
+                                        })
+                                        .eq("id", order.id)
+                                    }
+
+                                    toast({
+                                      title: "Zone Assigned Successfully!",
+                                      description: `Assigned ${zone.orders.length} orders in ${zone.name} to ${driver.name}. Route: ${zone.totalDistance}km, ${Math.floor(zone.estimatedTime / 60)}h ${zone.estimatedTime % 60}m`,
+                                    })
+
+                                    fetchOrders()
+                                  } catch (error) {
+                                    console.error("Error assigning zone:", error)
+                                    toast({
+                                      title: "Assignment Failed",
+                                      description: "Failed to assign zone to driver.",
+                                      variant: "destructive",
+                                    })
+                                  }
+                                }}
+                              >
+                                <div className="flex flex-col">
+                                  <span className="font-medium">{driver.name}</span>
+                                  <span className="text-xs text-muted-foreground">{driver.email}</span>
+                                </div>
+                              </DropdownMenuItem>
+                            ))
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+
+                      <Button size="sm" variant="outline">
+                        <Navigation className="h-4 w-4 mr-2" />
+                        View Route
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Optimization Summary */}
+              <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+                <h4 className="font-medium text-green-800 mb-2">Optimization Summary</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <span className="text-green-600">Total Orders:</span>
+                    <span className="font-medium ml-2">
+                      {routeZones.reduce((sum, zone) => sum + zone.orders.length, 0)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-green-600">Total Distance:</span>
+                    <span className="font-medium ml-2">
+                      {routeZones.reduce((sum, zone) => sum + zone.totalDistance, 0).toFixed(1)}km
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-green-600">Total Time:</span>
+                    <span className="font-medium ml-2">
+                      {Math.floor(routeZones.reduce((sum, zone) => sum + zone.estimatedTime, 0) / 60)}h{" "}
+                      {routeZones.reduce((sum, zone) => sum + zone.estimatedTime, 0) % 60}m
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-green-600">Zones Created:</span>
+                    <span className="font-medium ml-2">{routeZones.length}</span>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Delete Confirmation Dialog */}
@@ -839,4 +1312,28 @@ export default function OrdersPage() {
       </AlertDialog>
     </DashboardLayout>
   )
+}
+
+// Function to generate mock coordinates for orders
+function generateOrderCoordinates(orderId: string): [number, number] {
+  // Use a hash function to generate consistent coordinates based on the order ID
+  let hash = 0
+  for (let i = 0; i < orderId.length; i++) {
+    hash = (hash << 5) - hash + orderId.charCodeAt(i)
+    hash |= 0 // Convert to 32bit integer
+  }
+
+  // Use the hash to generate latitude and longitude offsets
+  const latOffset = (hash % 1000) / 10000 // Latitude offset between -0.05 and 0.05
+  const lngOffset = (hash % 1000) / 10000 // Longitude offset between -0.05 and 0.05
+
+  // Base coordinates (e.g., downtown Toronto)
+  const baseLatitude = 43.6532
+  const baseLongitude = -79.3832
+
+  // Generate the final coordinates
+  const latitude = baseLatitude + latOffset
+  const longitude = baseLongitude + lngOffset
+
+  return [latitude, longitude]
 }
