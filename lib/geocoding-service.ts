@@ -7,6 +7,8 @@ interface GeocodingCache {
     accuracy: "high" | "medium" | "low"
     city: string
     country: string
+    formatted_address: string
+    confidence: number
   }
 }
 
@@ -17,36 +19,19 @@ interface GeocodingResult {
   accuracy: "high" | "medium" | "low"
   city?: string
   country?: string
+  formatted_address?: string
+  confidence?: number
 }
 
 class GeocodingService {
   private cache: GeocodingCache = {}
-  private pendingRequests: Map<string, Promise<[number, number] | null>> = new Map()
-  private readonly CACHE_DURATION = 30 * 24 * 60 * 60 * 1000 // 30 days for better persistence
-  private readonly BATCH_SIZE = 3
-  private readonly REQUEST_DELAY = 500 // Increased delay for better reliability
+  private pendingRequests: Map<string, Promise<GeocodingResult>> = new Map()
+  private readonly CACHE_DURATION = 30 * 24 * 60 * 60 * 1000 // 30 days
+  private readonly BATCH_SIZE = 3 // Reduced for better accuracy
+  private readonly REQUEST_DELAY = 1500 // Increased delay for better results
   private readonly MAX_RETRIES = 3
   private requestCount = 0
   private lastRequestTime = 0
-
-  // Default fallback coordinates (can be configured per deployment)
-  private readonly DEFAULT_FALLBACK_COORDS = [
-    [43.6532, -79.3832], // Downtown
-    [43.6426, -79.3871], // Business District
-    [43.6629, -79.3957], // Market Area
-    [43.6481, -79.4042], // Industrial Area
-    [43.6596, -79.3977], // West End
-    [43.6677, -79.3948], // North District
-    [43.6532, -79.3698], // East District
-    [43.6319, -79.3716], // Southeast
-    [43.689, -79.3848], // North Central
-    [43.6205, -79.3132], // Eastern Area
-    [43.7615, -79.4111], // Northern Suburbs
-    [43.7731, -79.2584], // Eastern Suburbs
-    [43.6205, -79.5132], // Western Suburbs
-    [43.689, -79.4532], // Central North
-    [43.6319, -79.4216], // Southwest
-  ]
 
   constructor() {
     this.loadCache()
@@ -54,10 +39,13 @@ class GeocodingService {
 
   private loadCache(): void {
     try {
-      const cached = localStorage.getItem("geocoding-cache-v3")
-      if (cached) {
-        this.cache = JSON.parse(cached)
-        this.cleanExpiredCache()
+      if (typeof window !== "undefined") {
+        const cached = localStorage.getItem("geocoding-cache-v6")
+        if (cached) {
+          this.cache = JSON.parse(cached)
+          this.cleanExpiredCache()
+          console.log(`📍 Loaded ${Object.keys(this.cache).length} cached locations`)
+        }
       }
     } catch (error) {
       console.warn("Failed to load geocoding cache:", error)
@@ -67,7 +55,9 @@ class GeocodingService {
 
   private saveCache(): void {
     try {
-      localStorage.setItem("geocoding-cache-v3", JSON.stringify(this.cache))
+      if (typeof window !== "undefined") {
+        localStorage.setItem("geocoding-cache-v6", JSON.stringify(this.cache))
+      }
     } catch (error) {
       console.warn("Failed to save geocoding cache:", error)
     }
@@ -89,16 +79,20 @@ class GeocodingService {
     }
   }
 
-  private getCachedCoordinates(
-    address: string,
-  ): { coordinates: [number, number]; accuracy: "high" | "medium" | "low"; city: string; country: string } | null {
-    const entry = this.cache[address]
+  private getCachedCoordinates(address: string): GeocodingResult | null {
+    const cleanAddress = this.cleanAddress(address)
+    const entry = this.cache[cleanAddress]
     if (entry && entry.expires > Date.now()) {
+      console.log(`💾 Cache hit for: ${cleanAddress} -> [${entry.coordinates[0]}, ${entry.coordinates[1]}]`)
       return {
+        address: cleanAddress,
         coordinates: entry.coordinates,
+        fromCache: true,
         accuracy: entry.accuracy,
         city: entry.city,
         country: entry.country,
+        formatted_address: entry.formatted_address,
+        confidence: entry.confidence,
       }
     }
     return null
@@ -109,18 +103,24 @@ class GeocodingService {
     coordinates: [number, number],
     accuracy: "high" | "medium" | "low" = "high",
     city = "Unknown",
-    country = "Unknown",
+    country = "Canada",
+    formatted_address = address,
+    confidence = 1.0,
   ): void {
+    const cleanAddress = this.cleanAddress(address)
     const now = Date.now()
-    this.cache[address] = {
+    this.cache[cleanAddress] = {
       coordinates,
       timestamp: now,
       expires: now + this.CACHE_DURATION,
       accuracy,
       city,
       country,
+      formatted_address,
+      confidence,
     }
     this.saveCache()
+    console.log(`💾 Cached: ${cleanAddress} -> [${coordinates[0]}, ${coordinates[1]}] (${accuracy})`)
   }
 
   private async rateLimitedFetch(url: string): Promise<Response> {
@@ -128,7 +128,9 @@ class GeocodingService {
     const timeSinceLastRequest = now - this.lastRequestTime
 
     if (timeSinceLastRequest < this.REQUEST_DELAY) {
-      await new Promise((resolve) => setTimeout(resolve, this.REQUEST_DELAY - timeSinceLastRequest))
+      const waitTime = this.REQUEST_DELAY - timeSinceLastRequest
+      console.log(`⏳ Rate limiting: waiting ${waitTime}ms`)
+      await new Promise((resolve) => setTimeout(resolve, waitTime))
     }
 
     this.lastRequestTime = Date.now()
@@ -136,124 +138,253 @@ class GeocodingService {
 
     return fetch(url, {
       headers: {
-        "User-Agent": "DeliverySystem/1.0 (Contact: admin@deliverysystem.com)",
+        "User-Agent": "DeliveryOS/1.0 (Contact: admin@deliveryos.com)",
+        Accept: "application/json",
       },
     })
   }
 
-  private async geocodeSingleAddress(address: string, retryCount = 0): Promise<[number, number] | null> {
+  private cleanAddress(address: string): string {
+    return address
+      .trim()
+      .replace(/\s+/g, " ")
+      .replace(/,\s*,/g, ",")
+      .replace(/^,|,$/g, "")
+      .replace(/\b(apt|apartment|unit|suite|ste)\s*\.?\s*\w+/gi, "")
+      .toLowerCase()
+  }
+
+  private normalizeAddress(address: string): string {
+    // Add Canada if not present and clean up common variations
+    let normalized = address.trim()
+
+    // Add Canada if not present
+    if (
+      !normalized.toLowerCase().includes("canada") &&
+      !normalized.toLowerCase().includes("ontario") &&
+      !normalized.toLowerCase().includes("toronto")
+    ) {
+      normalized += ", Ontario, Canada"
+    }
+
+    // Standardize common abbreviations
+    normalized = normalized
+      .replace(/\bst\b/gi, "Street")
+      .replace(/\bave\b/gi, "Avenue")
+      .replace(/\brd\b/gi, "Road")
+      .replace(/\bblvd\b/gi, "Boulevard")
+      .replace(/\bdr\b/gi, "Drive")
+      .replace(/\bcres\b/gi, "Crescent")
+      .replace(/\bpl\b/gi, "Place")
+      .replace(/\bct\b/gi, "Court")
+
+    return normalized
+  }
+
+  private isValidCanadianCoordinate(lat: number, lng: number): boolean {
+    // More precise bounds for Greater Toronto Area and surrounding regions
+    return (
+      lat >= 43.0 &&
+      lat <= 45.0 && // Latitude bounds for GTA region
+      lng >= -80.5 &&
+      lng <= -78.5 && // Longitude bounds for GTA region
+      !isNaN(lat) &&
+      !isNaN(lng)
+    )
+  }
+
+  private extractCity(context: any[]): string {
+    if (!context) return "Toronto"
+
+    for (const item of context) {
+      if (item.id && (item.id.includes("place") || item.id.includes("locality"))) {
+        return item.text || item.text_en || "Toronto"
+      }
+    }
+    return "Toronto"
+  }
+
+  private async geocodeSingleAddress(address: string, retryCount = 0): Promise<GeocodingResult> {
     try {
-      const cleanAddress = address.trim().replace(/\s+/g, " ")
-      const encodedAddress = encodeURIComponent(cleanAddress)
+      const cleanAddress = this.cleanAddress(address)
+      const normalizedAddress = this.normalizeAddress(address)
 
-      console.log(`Geocoding address: ${cleanAddress}`)
+      console.log(`🔍 Geocoding: "${address}" -> normalized: "${normalizedAddress}"`)
 
-      const response = await this.rateLimitedFetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodedAddress}&limit=5&addressdetails=1&extratags=1`,
-      )
+      // Try Mapbox Geocoding API first (most accurate for Canadian addresses)
+      const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
+      if (mapboxToken) {
+        try {
+          const encodedAddress = encodeURIComponent(normalizedAddress)
+          const mapboxUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedAddress}.json?access_token=${mapboxToken}&limit=1&country=ca&proximity=-79.3832,43.6532&types=address,poi&language=en`
 
-      if (!response.ok) {
-        if (response.status === 429 && retryCount < this.MAX_RETRIES) {
-          // Rate limited, wait longer and retry
-          await new Promise((resolve) => setTimeout(resolve, 2000 * (retryCount + 1)))
-          return this.geocodeSingleAddress(address, retryCount + 1)
+          console.log(`📡 Mapbox request: ${mapboxUrl}`)
+          const mapboxResponse = await this.rateLimitedFetch(mapboxUrl)
+
+          if (mapboxResponse.ok) {
+            const mapboxData = await mapboxResponse.json()
+            console.log(`📡 Mapbox response:`, mapboxData)
+
+            if (mapboxData.features && mapboxData.features.length > 0) {
+              const feature = mapboxData.features[0]
+              const [lng, lat] = feature.center
+              const relevance = feature.relevance || 0
+
+              console.log(`📍 Mapbox coordinates: [${lat}, ${lng}], relevance: ${relevance}`)
+
+              if (this.isValidCanadianCoordinate(lat, lng) && relevance > 0.6) {
+                const coordinates: [number, number] = [lat, lng]
+                const accuracy = relevance > 0.9 ? "high" : relevance > 0.7 ? "medium" : "low"
+                const city = this.extractCity(feature.context)
+
+                const result: GeocodingResult = {
+                  address: cleanAddress,
+                  coordinates,
+                  fromCache: false,
+                  accuracy,
+                  city,
+                  country: "Canada",
+                  formatted_address: feature.place_name,
+                  confidence: relevance,
+                }
+
+                this.setCachedCoordinates(address, coordinates, accuracy, city, "Canada", feature.place_name, relevance)
+
+                console.log(`✅ Mapbox success: ${address} -> [${lat}, ${lng}] (${city}, confidence: ${relevance})`)
+                return result
+              } else {
+                console.warn(
+                  `⚠️ Mapbox coordinates out of bounds or low relevance: [${lat}, ${lng}], relevance: ${relevance}`,
+                )
+              }
+            }
+          } else {
+            console.warn(`⚠️ Mapbox API error: ${mapboxResponse.status} ${mapboxResponse.statusText}`)
+          }
+        } catch (error) {
+          console.warn("Mapbox geocoding failed:", error)
         }
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
       }
 
-      const data = await response.json()
+      // Fallback to Nominatim with enhanced Canadian focus
+      try {
+        const encodedAddress = encodeURIComponent(normalizedAddress)
+        const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodedAddress}&limit=1&addressdetails=1&countrycodes=ca&bounded=1&viewbox=-80.5,45.0,-78.5,43.0&dedupe=1`
 
-      if (data && data.length > 0) {
-        // Sort by importance/accuracy
-        const sortedResults = data.sort((a: any, b: any) => {
-          const aImportance = Number.parseFloat(a.importance || 0)
-          const bImportance = Number.parseFloat(b.importance || 0)
-          return bImportance - aImportance
-        })
+        console.log(`📡 Nominatim request: ${nominatimUrl}`)
+        const response = await this.rateLimitedFetch(nominatimUrl)
 
-        const bestResult = sortedResults[0]
-        const lat = Number.parseFloat(bestResult.lat)
-        const lon = Number.parseFloat(bestResult.lon)
-
-        if (!isNaN(lat) && !isNaN(lon)) {
-          const coordinates: [number, number] = [lat, lon]
-
-          // Determine accuracy based on result quality
-          const accuracy = bestResult.importance > 0.7 ? "high" : bestResult.importance > 0.4 ? "medium" : "low"
-
-          // Extract city and country from result
-          const addressComponents = bestResult.address || {}
-          const city = addressComponents.city || addressComponents.town || addressComponents.municipality || "Unknown"
-          const country = addressComponents.country || "Unknown"
-
-          this.setCachedCoordinates(address, coordinates, accuracy, city, country)
-
-          console.log(`Successfully geocoded: ${address} -> [${lat}, ${lon}] (${city}, ${country})`)
-          return coordinates
+        if (!response.ok) {
+          if (response.status === 429 && retryCount < this.MAX_RETRIES) {
+            const waitTime = 3000 * (retryCount + 1)
+            console.log(`⏳ Rate limited, waiting ${waitTime}ms before retry ${retryCount + 1}`)
+            await new Promise((resolve) => setTimeout(resolve, waitTime))
+            return this.geocodeSingleAddress(address, retryCount + 1)
+          }
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`)
         }
+
+        const data = await response.json()
+        console.log(`📡 Nominatim response:`, data)
+
+        if (data && data.length > 0) {
+          const result = data[0]
+          const lat = Number.parseFloat(result.lat)
+          const lng = Number.parseFloat(result.lon)
+          const importance = Number.parseFloat(result.importance || 0)
+
+          console.log(`📍 Nominatim coordinates: [${lat}, ${lng}], importance: ${importance}`)
+
+          if (this.isValidCanadianCoordinate(lat, lng)) {
+            const coordinates: [number, number] = [lat, lng]
+            const accuracy = importance > 0.7 ? "high" : importance > 0.5 ? "medium" : "low"
+            const addressComponents = result.address || {}
+            const city =
+              addressComponents.city ||
+              addressComponents.town ||
+              addressComponents.municipality ||
+              addressComponents.suburb ||
+              "Toronto"
+
+            const geocodingResult: GeocodingResult = {
+              address: cleanAddress,
+              coordinates,
+              fromCache: false,
+              accuracy,
+              city,
+              country: "Canada",
+              formatted_address: result.display_name,
+              confidence: importance,
+            }
+
+            this.setCachedCoordinates(address, coordinates, accuracy, city, "Canada", result.display_name, importance)
+
+            console.log(`✅ Nominatim success: ${address} -> [${lat}, ${lng}] (${city}, importance: ${importance})`)
+            return geocodingResult
+          } else {
+            console.warn(`⚠️ Nominatim coordinates out of bounds: [${lat}, ${lng}]`)
+          }
+        }
+      } catch (error) {
+        console.warn("Nominatim geocoding failed:", error)
       }
 
-      console.warn(`No valid coordinates found for address: ${address}`)
-      return null
+      console.warn(`❌ No valid coordinates found for address: ${address}`)
+      return {
+        address: cleanAddress,
+        coordinates: null,
+        fromCache: false,
+        accuracy: "low",
+        confidence: 0,
+      }
     } catch (error) {
-      console.error("Geocoding error for address:", address, error)
+      console.error(`❌ Geocoding error for address "${address}":`, error)
 
       if (retryCount < this.MAX_RETRIES) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (retryCount + 1)))
+        const waitTime = 2000 * (retryCount + 1)
+        console.log(`🔄 Retrying geocoding for "${address}" in ${waitTime}ms (attempt ${retryCount + 1})`)
+        await new Promise((resolve) => setTimeout(resolve, waitTime))
         return this.geocodeSingleAddress(address, retryCount + 1)
       }
 
-      return null
+      return {
+        address,
+        coordinates: null,
+        fromCache: false,
+        accuracy: "low",
+        confidence: 0,
+      }
     }
   }
 
-  private generateFallbackCoordinates(address: string, index: number): [number, number] {
-    // Generate realistic coordinates based on address hash
-    let hash = 0
-    for (let i = 0; i < address.length; i++) {
-      const char = address.charCodeAt(i)
-      hash = (hash << 5) - hash + char
-      hash = hash & hash // Convert to 32-bit integer
-    }
-
-    const normalizedHash = Math.abs(hash) / 2147483647 // Normalize to 0-1
-    const fallbackIndex = Math.floor(normalizedHash * this.DEFAULT_FALLBACK_COORDS.length)
-    const baseCoords = this.DEFAULT_FALLBACK_COORDS[fallbackIndex]
-
-    // Add small random offset to avoid exact overlaps
-    const latOffset = (Math.random() - 0.5) * 0.01 // ~1km variation
-    const lonOffset = (Math.random() - 0.5) * 0.01
-
-    const coordinates: [number, number] = [baseCoords[0] + latOffset, baseCoords[1] + lonOffset]
-
-    console.log(`Generated fallback coordinates for: ${address} -> [${coordinates[0]}, ${coordinates[1]}]`)
-    return coordinates
-  }
-
-  async geocodeAddress(address: string): Promise<[number, number] | null> {
+  async geocodeAddress(address: string): Promise<GeocodingResult> {
     if (!address || address.trim().length === 0) {
-      return null
+      return {
+        address: "",
+        coordinates: null,
+        fromCache: false,
+        accuracy: "low",
+        confidence: 0,
+      }
     }
 
-    const cleanAddress = address.trim()
+    const cleanAddress = this.cleanAddress(address)
 
     // Check cache first
-    const cached = this.getCachedCoordinates(cleanAddress)
+    const cached = this.getCachedCoordinates(address)
     if (cached) {
-      console.log(
-        `Using cached coordinates for: ${cleanAddress} -> [${cached.coordinates[0]}, ${cached.coordinates[1]}] (${cached.city})`,
-      )
-      return cached.coordinates
+      return cached
     }
 
     // Check if request is already pending
     const pending = this.pendingRequests.get(cleanAddress)
     if (pending) {
-      return pending
+      console.log(`⏳ Waiting for pending request: ${cleanAddress}`)
+      return await pending
     }
 
     // Create new request
-    const request = this.geocodeSingleAddress(cleanAddress)
+    const request = this.geocodeSingleAddress(address)
     this.pendingRequests.set(cleanAddress, request)
 
     try {
@@ -266,121 +397,83 @@ class GeocodingService {
 
   async geocodeBatch(addresses: string[]): Promise<GeocodingResult[]> {
     const results: GeocodingResult[] = []
-    const toGeocode: string[] = []
+    const toGeocode: { address: string; index: number }[] = []
 
-    console.log(`Starting batch geocoding for ${addresses.length} addresses`)
+    console.log(`🚀 Starting batch geocoding for ${addresses.length} addresses`)
 
-    // First pass: check cache and prepare uncached addresses
-    for (const address of addresses) {
+    // First pass: check cache and prepare results array
+    for (let i = 0; i < addresses.length; i++) {
+      const address = addresses[i]
       const cached = this.getCachedCoordinates(address)
       if (cached) {
-        results.push({
-          address,
-          coordinates: cached.coordinates,
-          fromCache: true,
-          accuracy: cached.accuracy,
-          city: cached.city,
-          country: cached.country,
-        })
+        results[i] = cached
       } else {
-        toGeocode.push(address)
-        results.push({
+        results[i] = {
           address,
           coordinates: null,
           fromCache: false,
           accuracy: "low",
-        })
+          confidence: 0,
+        }
+        toGeocode.push({ address, index: i })
       }
     }
 
-    console.log(`Found ${results.filter((r) => r.fromCache).length} cached, need to geocode ${toGeocode.length}`)
+    console.log(`💾 Found ${results.filter((r) => r.fromCache).length} cached, need to geocode ${toGeocode.length}`)
 
-    // Second pass: geocode uncached addresses in batches
+    // Second pass: geocode uncached addresses in smaller batches
     if (toGeocode.length > 0) {
-      const batches: string[][] = []
+      const batches: { address: string; index: number }[][] = []
       for (let i = 0; i < toGeocode.length; i += this.BATCH_SIZE) {
         batches.push(toGeocode.slice(i, i + this.BATCH_SIZE))
       }
 
-      for (const batch of batches) {
-        const batchPromises = batch.map(async (address, index) => {
-          if (index > 0) {
-            await new Promise((resolve) => setTimeout(resolve, this.REQUEST_DELAY * index))
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex]
+        console.log(`🔄 Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} addresses)`)
+
+        const batchPromises = batch.map(async ({ address, index }, batchItemIndex) => {
+          // Stagger requests within batch
+          if (batchItemIndex > 0) {
+            await new Promise((resolve) => setTimeout(resolve, this.REQUEST_DELAY * batchItemIndex))
           }
-          return this.geocodeAddress(address)
+
+          const result = await this.geocodeAddress(address)
+          return { result, index }
         })
 
         const batchResults = await Promise.all(batchPromises)
 
-        batch.forEach((address, index) => {
-          const resultIndex = results.findIndex((r) => r.address === address && !r.fromCache)
-          if (resultIndex !== -1) {
-            results[resultIndex].coordinates = batchResults[index]
-            results[resultIndex].accuracy = batchResults[index] ? "high" : "low"
-          }
+        // Update results array
+        batchResults.forEach(({ result, index }) => {
+          results[index] = result
         })
 
         // Delay between batches
-        if (batches.indexOf(batch) < batches.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1500))
+        if (batchIndex < batches.length - 1) {
+          const delayTime = 3000
+          console.log(`⏳ Waiting ${delayTime}ms before next batch`)
+          await new Promise((resolve) => setTimeout(resolve, delayTime))
         }
       }
     }
 
+    const successCount = results.filter((r) => r.coordinates).length
+    const highAccuracyCount = results.filter((r) => r.accuracy === "high").length
+
     console.log(
-      `Batch geocoding completed: ${results.filter((r) => r.coordinates).length}/${results.length} successful`,
+      `✅ Batch geocoding completed: ${successCount}/${results.length} successful (${highAccuracyCount} high accuracy)`,
     )
-    return results
-  }
-
-  async geocodeWithFallback(
-    addresses: string[],
-  ): Promise<
-    Array<{ address: string; coordinates: [number, number]; accuracy: "high" | "medium" | "low"; city: string }>
-  > {
-    const results: Array<{
-      address: string
-      coordinates: [number, number]
-      accuracy: "high" | "medium" | "low"
-      city: string
-    }> = []
-
-    console.log(`Geocoding ${addresses.length} addresses with fallback`)
-
-    // Provide immediate fallback coordinates
-    addresses.forEach((address, index) => {
-      const cached = this.getCachedCoordinates(address)
-      results.push({
-        address,
-        coordinates: cached?.coordinates || this.generateFallbackCoordinates(address, index),
-        accuracy: cached?.accuracy || "low",
-        city: cached?.city || "Unknown",
-      })
-    })
-
-    // Start background geocoding for uncached addresses
-    const uncachedAddresses = addresses.filter((addr) => !this.getCachedCoordinates(addr))
-
-    if (uncachedAddresses.length > 0) {
-      console.log(`Starting background geocoding for ${uncachedAddresses.length} uncached addresses`)
-
-      this.geocodeBatch(uncachedAddresses)
-        .then((geocodedResults) => {
-          const successCount = geocodedResults.filter((r) => r.coordinates).length
-          console.log(`Background geocoded ${successCount}/${geocodedResults.length} addresses`)
-        })
-        .catch((error) => {
-          console.warn("Background geocoding failed:", error)
-        })
-    }
 
     return results
   }
 
   clearCache(): void {
     this.cache = {}
-    localStorage.removeItem("geocoding-cache-v3")
-    console.log("Geocoding cache cleared")
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("geocoding-cache-v6")
+    }
+    console.log("🗑️ Geocoding cache cleared")
   }
 
   getCacheStats(): {
@@ -389,6 +482,7 @@ class GeocodingService {
     size: string
     accuracy: { high: number; medium: number; low: number }
     cities: { [city: string]: number }
+    averageConfidence: number
   } {
     const now = Date.now()
     const total = Object.keys(this.cache).length
@@ -411,19 +505,28 @@ class GeocodingService {
       {} as { [city: string]: number },
     )
 
+    const averageConfidence =
+      total > 0 ? Object.values(this.cache).reduce((sum, entry) => sum + (entry.confidence || 0), 0) / total : 0
+
     return {
       total,
       expired,
       size: `${(size / 1024).toFixed(1)} KB`,
       accuracy,
       cities,
+      averageConfidence: Math.round(averageConfidence * 100) / 100,
     }
   }
 
-  getRequestStats(): { count: number; lastRequest: number } {
+  // Get detailed geocoding info for debugging
+  getGeocodingInfo(address: string): any {
+    const cleanAddress = this.cleanAddress(address)
+    const cached = this.cache[cleanAddress]
     return {
-      count: this.requestCount,
-      lastRequest: this.lastRequestTime,
+      originalAddress: address,
+      cleanAddress,
+      cached: !!cached,
+      cacheEntry: cached || null,
     }
   }
 }

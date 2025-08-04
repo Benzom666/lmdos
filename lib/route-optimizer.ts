@@ -1,4 +1,4 @@
-// Advanced route optimization algorithms with real-time dynamic optimization
+// Advanced route optimization algorithms with real-time dynamic optimization and Mapbox Optimization API
 import { distanceCalculator } from "./distance-calculator"
 
 interface OptimizationResult {
@@ -49,15 +49,38 @@ interface Coordinates {
 }
 
 interface OptimizationWaypoint {
-  coordinates: [number, number]
+  coordinates: [number, number] // [lat, lng]
   name?: string
+  address?: string
 }
 
 interface OptimizedRoute {
   waypoints: OptimizationWaypoint[]
+  distance: number // meters
+  duration: number // seconds
+  geometry: [number, number][] // [lat, lng] coordinates for the route line
+  legs: RouteLeg[]
+}
+
+interface RouteLeg {
   distance: number
   duration: number
-  geometry: [number, number][]
+  steps: RouteStep[]
+}
+
+interface RouteStep {
+  distance: number
+  duration: number
+  instruction: string
+  coordinates: [number, number][]
+}
+
+interface RouteOptimizationOptions {
+  profile?: "driving" | "walking" | "cycling"
+  source?: "first" | "any"
+  destination?: "last" | "any"
+  roundtrip?: boolean
+  annotations?: string[]
 }
 
 class RouteOptimizer {
@@ -1100,82 +1123,186 @@ class RouteOptimizer {
   }
 
   // Optimize route using Mapbox Optimization API
-  async optimizeRoute(waypoints: OptimizationWaypoint[]): Promise<OptimizedRoute> {
+  async optimizeRoute(
+    waypoints: OptimizationWaypoint[],
+    options: RouteOptimizationOptions = {},
+  ): Promise<OptimizedRoute> {
     if (!this.accessToken) {
-      throw new Error("Mapbox access token is required")
+      throw new Error("Mapbox access token is required for route optimization")
     }
 
     if (waypoints.length < 2) {
-      throw new Error("At least 2 waypoints are required")
+      throw new Error("At least 2 waypoints are required for route optimization")
     }
 
-    if (waypoints.length > 25) {
-      throw new Error("Maximum 25 waypoints allowed")
+    if (waypoints.length > 12) {
+      throw new Error("Maximum 12 waypoints allowed for Mapbox Optimization API")
     }
 
     try {
-      // Format coordinates for Mapbox API
-      const coordinates = waypoints.map((wp) => `${wp.coordinates[1]},${wp.coordinates[0]}`).join(";")
+      console.log(`🚀 Optimizing route for ${waypoints.length} waypoints`)
 
-      const url = `https://api.mapbox.com/optimized-trips/v1/mapbox/driving/${coordinates}?access_token=${this.accessToken}&overview=full&steps=true&geometries=geojson`
+      // Validate coordinates
+      const validWaypoints = waypoints.filter((wp) => {
+        const [lat, lng] = wp.coordinates
+        return !isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180
+      })
 
-      const response = await fetch(url)
+      if (validWaypoints.length !== waypoints.length) {
+        console.warn(`⚠️ Filtered out ${waypoints.length - validWaypoints.length} invalid waypoints`)
+      }
+
+      if (validWaypoints.length < 2) {
+        throw new Error("Not enough valid waypoints after filtering")
+      }
+
+      // Format coordinates for Mapbox API (lng,lat format)
+      const coordinates = validWaypoints.map((wp) => `${wp.coordinates[1]},${wp.coordinates[0]}`).join(";")
+
+      // Build API URL with options
+      const profile = options.profile || "driving"
+      const source = options.source || "first"
+      const destination = options.destination || "last"
+      const roundtrip = options.roundtrip || false
+
+      const url = new URL(`https://api.mapbox.com/optimized-trips/v1/mapbox/${profile}/${coordinates}`)
+      url.searchParams.set("access_token", this.accessToken)
+      url.searchParams.set("overview", "full")
+      url.searchParams.set("steps", "true")
+      url.searchParams.set("geometries", "geojson")
+      url.searchParams.set("source", source)
+      url.searchParams.set("destination", destination)
+      url.searchParams.set("roundtrip", roundtrip.toString())
+
+      if (options.annotations) {
+        url.searchParams.set("annotations", options.annotations.join(","))
+      }
+
+      console.log(`📡 Calling Mapbox Optimization API: ${url.toString()}`)
+
+      const response = await fetch(url.toString())
 
       if (!response.ok) {
-        throw new Error(`Mapbox API error: ${response.status} ${response.statusText}`)
+        const errorText = await response.text()
+        throw new Error(`Mapbox API error: ${response.status} ${response.statusText} - ${errorText}`)
       }
 
       const data = await response.json()
 
       if (data.code !== "Ok") {
-        throw new Error(`Optimization failed: ${data.message || "Unknown error"}`)
+        throw new Error(`Optimization failed: ${data.code} - ${data.message || "Unknown error"}`)
+      }
+
+      if (!data.trips || data.trips.length === 0) {
+        throw new Error("No optimized trips returned from API")
       }
 
       const trip = data.trips[0]
-      const optimizedWaypoints = data.waypoints.map((wp: any, index: number) => ({
-        coordinates: [wp.location[1], wp.location[0]] as [number, number],
-        name: waypoints[wp.waypoint_index]?.name || `Stop ${index + 1}`,
-        waypointIndex: wp.waypoint_index,
+      const optimizedWaypoints = data.waypoints.map((wp: any, index: number) => {
+        const originalWaypoint = waypoints[wp.waypoint_index]
+        return {
+          coordinates: [wp.location[1], wp.location[0]] as [number, number], // Convert back to [lat, lng]
+          name: originalWaypoint.name || `Stop ${index + 1}`,
+          address: originalWaypoint.address,
+          waypointIndex: wp.waypoint_index,
+        }
+      })
+
+      // Convert geometry coordinates from [lng, lat] to [lat, lng]
+      const geometry = trip.geometry.coordinates.map(
+        (coord: [number, number]) => [coord[1], coord[0]] as [number, number],
+      )
+
+      // Process legs with detailed steps
+      const legs: RouteLeg[] = trip.legs.map((leg: any) => ({
+        distance: leg.distance,
+        duration: leg.duration,
+        steps: leg.steps.map((step: any) => ({
+          distance: step.distance,
+          duration: step.duration,
+          instruction: step.maneuver.instruction,
+          coordinates: step.geometry.coordinates.map(
+            (coord: [number, number]) => [coord[1], coord[0]] as [number, number],
+          ),
+        })),
       }))
 
-      return {
+      const result: OptimizedRoute = {
         waypoints: optimizedWaypoints,
-        distance: trip.distance, // meters
-        duration: trip.duration, // seconds
-        geometry: trip.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]]), // Convert to [lat, lng]
+        distance: trip.distance,
+        duration: trip.duration,
+        geometry,
+        legs,
       }
+
+      console.log(`✅ Route optimization completed:`)
+      console.log(`   - Distance: ${this.formatDistance(result.distance)}`)
+      console.log(`   - Duration: ${this.formatDuration(result.duration)}`)
+      console.log(`   - Waypoints: ${result.waypoints.length}`)
+
+      return result
     } catch (error) {
-      console.error("Route optimization error:", error)
+      console.error("❌ Route optimization error:", error)
       throw error
     }
   }
 
+  // Batch optimize multiple routes
+  async optimizeMultipleRoutes(
+    routeRequests: { waypoints: OptimizationWaypoint[]; options?: RouteOptimizationOptions }[],
+  ): Promise<OptimizedRoute[]> {
+    const results: OptimizedRoute[] = []
+
+    for (let i = 0; i < routeRequests.length; i++) {
+      const request = routeRequests[i]
+      try {
+        console.log(`🔄 Processing route ${i + 1}/${routeRequests.length}`)
+        const result = await this.optimizeRoute(request.waypoints, request.options)
+        results.push(result)
+
+        // Add delay between requests to respect rate limits
+        if (i < routeRequests.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+      } catch (error) {
+        console.error(`❌ Failed to optimize route ${i + 1}:`, error)
+        throw error
+      }
+    }
+
+    return results
+  }
+
   // Calculate distance between two points using Haversine formula
-  calculateDistance(point1: Coordinates, point2: Coordinates): number {
+  calculateDistance(point1: [number, number], point2: [number, number]): number {
     const R = 6371 // Earth's radius in kilometers
-    const dLat = this.toRadians(point2.latitude - point1.latitude)
-    const dLon = this.toRadians(point2.longitude - point1.longitude)
+    const [lat1, lng1] = point1
+    const [lat2, lng2] = point2
+
+    const dLat = this.toRadians(lat2 - lat1)
+    const dLng = this.toRadians(lng2 - lng1)
 
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(this.toRadians(point1.latitude)) *
-        Math.cos(this.toRadians(point2.latitude)) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2)
+      Math.cos(this.toRadians(lat1)) * Math.cos(this.toRadians(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2)
 
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-    return R * c
+    return R * c * 1000 // Convert to meters
   }
 
   // Format duration in seconds to human readable format
   formatDuration(seconds: number): string {
     const hours = Math.floor(seconds / 3600)
     const minutes = Math.floor((seconds % 3600) / 60)
+    const remainingSeconds = seconds % 60
 
     if (hours > 0) {
       return `${hours}h ${minutes}m`
     }
-    return `${minutes}m`
+    if (minutes > 0) {
+      return `${minutes}m ${Math.round(remainingSeconds)}s`
+    }
+    return `${Math.round(remainingSeconds)}s`
   }
 
   // Format distance in meters to human readable format
@@ -1190,62 +1317,28 @@ class RouteOptimizer {
     return degrees * (Math.PI / 180)
   }
 
-  private analyzeRoute(route: number[], coordinates: [number, number][]) {
-    if (route.length === 0 || coordinates.length === 0) {
-      return {
-        averageSegmentDistance: 0,
-        longestSegment: 0,
-        shortestSegment: 0,
-        clusteringScore: 0,
-      }
-    }
-
-    const distances: number[] = []
-
-    for (let i = 0; i < route.length - 1; i++) {
-      const from = coordinates[route[i]]
-      const to = coordinates[route[i + 1]]
-      if (from && to) {
-        try {
-          distances.push(distanceCalculator.calculateRealWorldDistance(from, to))
-        } catch (error) {
-          console.warn("Error calculating segment distance:", error)
-        }
-      }
-    }
-
-    if (distances.length === 0) {
-      return {
-        averageSegmentDistance: 0,
-        longestSegment: 0,
-        shortestSegment: 0,
-        clusteringScore: 0,
-      }
-    }
+  // Validate waypoints
+  validateWaypoints(waypoints: OptimizationWaypoint[]): { valid: OptimizationWaypoint[]; invalid: number } {
+    const valid = waypoints.filter((wp) => {
+      const [lat, lng] = wp.coordinates
+      return (
+        !isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && lat !== 0 && lng !== 0 // Exclude null island
+      )
+    })
 
     return {
-      averageSegmentDistance: distances.reduce((sum, d) => sum + d, 0) / distances.length,
-      longestSegment: Math.max(...distances),
-      shortestSegment: Math.min(...distances),
-      clusteringScore: this.calculateClusteringScore(distances),
+      valid,
+      invalid: waypoints.length - valid.length,
     }
   }
 
-  private calculateClusteringScore(distances: number[]): number {
-    if (distances.length === 0) return 0
-
-    const avg = distances.reduce((sum, d) => sum + d, 0) / distances.length
-    const variance = distances.reduce((sum, d) => sum + Math.pow(d - avg, 2), 0) / distances.length
-
-    // Lower variance = better clustering
-    return Math.max(0, 100 - Math.sqrt(variance))
-  }
-
-  private compareResults(a: OptimizationResult, b: OptimizationResult): number {
-    // Weighted comparison: distance (60%), time (30%), improvement (10%)
-    const scoreA = a.totalDistance * 0.6 + a.totalTime * 0.3 - a.improvement * 0.1
-    const scoreB = b.totalDistance * 0.6 + b.totalTime * 0.3 - b.improvement * 0.1
-    return scoreB - scoreA // Lower is better
+  // Create waypoint from address (requires geocoding)
+  createWaypoint(coordinates: [number, number], name?: string, address?: string): OptimizationWaypoint {
+    return {
+      coordinates,
+      name: name || `Stop at ${coordinates[0].toFixed(4)}, ${coordinates[1].toFixed(4)}`,
+      address,
+    }
   }
 
   private twoOptSwap(route: number[], i: number, j: number): number[] {
