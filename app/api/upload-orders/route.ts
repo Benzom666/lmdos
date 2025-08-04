@@ -1,216 +1,269 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { supabase } from "@/lib/supabase"
 
-export async function POST(req: NextRequest) {
+interface ParsedOrder {
+  order_number: string
+  customer_name: string
+  customer_phone?: string
+  customer_email?: string
+  pickup_address: string
+  delivery_address: string
+  priority: string
+  delivery_notes?: string
+}
+
+export async function POST(request: NextRequest) {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-
-    // Create a Supabase client
-    const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
-    // Parse the multipart form data
-    const formData = await req.formData()
+    const formData = await request.formData()
     const file = formData.get("file") as File
     const adminId = formData.get("adminId") as string
 
-    if (!file || !adminId) {
-      return NextResponse.json({ error: "File and admin ID are required" }, { status: 400 })
+    if (!file) {
+      return NextResponse.json({ error: "No file provided" }, { status: 400 })
     }
 
-    // Read the file content
+    if (!adminId) {
+      return NextResponse.json({ error: "Admin ID required" }, { status: 400 })
+    }
+
+    console.log("📁 Processing file:", file.name, "Size:", file.size, "Type:", file.type)
+
+    // Read file content
     const fileContent = await file.text()
+    console.log("📄 File content preview:", fileContent.substring(0, 200))
 
-    // Parse CSV (simple implementation - in a real app, use a CSV parser library)
-    const lines = fileContent.split("\n").filter((line) => line.trim())
+    // Parse CSV with better error handling
+    const lines = fileContent.split(/\r?\n/).filter((line) => line.trim())
+    console.log("📊 Total lines found:", lines.length)
+
     if (lines.length < 2) {
-      return NextResponse.json({ error: "File must contain at least a header row and one data row" }, { status: 400 })
+      return NextResponse.json(
+        {
+          error: "File must contain at least a header row and one data row",
+          debug: { linesFound: lines.length, preview: lines },
+        },
+        { status: 400 },
+      )
     }
 
-    const headers = lines[0].split(",").map((header) => header.trim().replace(/"/g, ""))
+    // Parse header
+    const headerLine = lines[0]
+    const headers = parseCSVLine(headerLine)
+    console.log("📋 Headers found:", headers)
 
-    // Validate headers - only require the essential fields
+    // Validate required headers
     const requiredHeaders = ["order_number", "customer_name", "pickup_address", "delivery_address"]
-    const optionalHeaders = ["customer_phone", "customer_email", "delivery_notes", "priority", "status"]
-    const missingHeaders = requiredHeaders.filter((header) => !headers.includes(header))
+    const missingHeaders = requiredHeaders.filter(
+      (header) => !headers.some((h) => h.toLowerCase().includes(header.toLowerCase())),
+    )
 
     if (missingHeaders.length > 0) {
       return NextResponse.json(
         {
-          error: `Missing required headers: ${missingHeaders.join(", ")}. Required: ${requiredHeaders.join(", ")}`,
+          error: `Missing required headers: ${missingHeaders.join(", ")}`,
+          debug: {
+            foundHeaders: headers,
+            requiredHeaders,
+            missingHeaders,
+          },
         },
         { status: 400 },
       )
     }
 
-    // Parse rows
-    const orders = []
-    const errors = []
+    // Create header mapping
+    const headerMap = createHeaderMapping(headers)
+    console.log("🗺️ Header mapping:", headerMap)
+
+    // Parse data rows
+    const validOrders: ParsedOrder[] = []
+    const validationErrors: string[] = []
 
     for (let i = 1; i < lines.length; i++) {
-      if (!lines[i].trim()) continue // Skip empty lines
+      const line = lines[i].trim()
+      if (!line) continue
 
-      // Handle CSV parsing with quoted fields
-      const values =
-        lines[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)?.map((val) => val.replace(/^"(.*)"$/, "$1").trim()) || []
+      try {
+        const values = parseCSVLine(line)
+        console.log(`📝 Row ${i} values:`, values)
 
-      if (values.length < requiredHeaders.length) {
-        errors.push(`Row ${i + 1}: Missing required fields`)
-        continue
-      }
-
-      const order: Record<string, any> = {}
-      headers.forEach((header, index) => {
-        const value = values[index]
-        // Handle empty values properly
-        if (value === undefined || value === "" || value === '""') {
-          order[header] = null
-        } else {
-          order[header] = value
+        if (values.length < headers.length) {
+          validationErrors.push(`Row ${i}: Expected ${headers.length} columns, got ${values.length}`)
+          continue
         }
-      })
 
-      // Validate required fields - ensure they're not null or empty
-      const missingRequiredFields = requiredHeaders.filter((field) => !order[field] || order[field].trim() === "")
+        const order: ParsedOrder = {
+          order_number: getValueByHeader(values, headerMap, "order_number") || `ORD-${Date.now()}-${i}`,
+          customer_name: getValueByHeader(values, headerMap, "customer_name") || "",
+          customer_phone: getValueByHeader(values, headerMap, "customer_phone") || undefined,
+          customer_email: getValueByHeader(values, headerMap, "customer_email") || undefined,
+          pickup_address: getValueByHeader(values, headerMap, "pickup_address") || "",
+          delivery_address: getValueByHeader(values, headerMap, "delivery_address") || "",
+          priority: getValueByHeader(values, headerMap, "priority") || "normal",
+          delivery_notes: getValueByHeader(values, headerMap, "delivery_notes") || undefined,
+        }
 
-      if (missingRequiredFields.length > 0) {
-        errors.push(`Row ${i + 1}: Missing required fields: ${missingRequiredFields.join(", ")}`)
-        continue
+        // Validate required fields
+        if (!order.customer_name) {
+          validationErrors.push(`Row ${i}: Customer name is required`)
+          continue
+        }
+        if (!order.pickup_address) {
+          validationErrors.push(`Row ${i}: Pickup address is required`)
+          continue
+        }
+        if (!order.delivery_address) {
+          validationErrors.push(`Row ${i}: Delivery address is required`)
+          continue
+        }
+
+        // Validate priority
+        const validPriorities = ["low", "normal", "high", "urgent"]
+        if (!validPriorities.includes(order.priority.toLowerCase())) {
+          order.priority = "normal"
+        }
+
+        validOrders.push(order)
+        console.log(`✅ Row ${i} parsed successfully:`, order.order_number)
+      } catch (error) {
+        console.error(`❌ Error parsing row ${i}:`, error)
+        validationErrors.push(`Row ${i}: ${error instanceof Error ? error.message : "Parse error"}`)
       }
-
-      // Check for duplicate order number
-      const existingOrderCheck = await supabase
-        .from("orders")
-        .select("id")
-        .eq("order_number", order.order_number)
-        .maybeSingle()
-
-      if (existingOrderCheck.data) {
-        errors.push(`Row ${i + 1}: Order number "${order.order_number}" already exists`)
-        continue
-      }
-
-      // Set default values and admin info
-      order.created_by = adminId
-      order.status = order.status || "pending"
-      order.priority = order.priority || "normal"
-
-      // Handle coordinate fields
-      order.pickup_latitude = Number.parseFloat(order.pickup_latitude) || 0
-      order.pickup_longitude = Number.parseFloat(order.pickup_longitude) || 0
-      order.delivery_latitude = Number.parseFloat(order.delivery_latitude) || 0
-      order.delivery_longitude = Number.parseFloat(order.delivery_longitude) || 0
-
-      // Set timestamps
-      order.created_at = new Date().toISOString()
-      order.updated_at = new Date().toISOString()
-
-      // Validate priority if provided
-      if (order.priority && !["low", "normal", "high", "urgent"].includes(order.priority)) {
-        errors.push(`Row ${i + 1}: Invalid priority "${order.priority}". Must be: low, normal, high, urgent`)
-        continue
-      }
-
-      // Validate status if provided
-      if (
-        order.status &&
-        !["pending", "assigned", "picked_up", "in_transit", "delivered", "cancelled"].includes(order.status)
-      ) {
-        errors.push(`Row ${i + 1}: Invalid status "${order.status}"`)
-        continue
-      }
-
-      // Clean up the order object - remove any undefined values and extra fields
-      const cleanOrder = {
-        order_number: order.order_number,
-        customer_name: order.customer_name,
-        customer_phone: order.customer_phone || null,
-        customer_email: order.customer_email || null,
-        pickup_address: order.pickup_address,
-        delivery_address: order.delivery_address,
-        pickup_latitude: order.pickup_latitude,
-        pickup_longitude: order.pickup_longitude,
-        delivery_latitude: order.delivery_latitude,
-        delivery_longitude: order.delivery_longitude,
-        status: order.status,
-        priority: order.priority,
-        driver_id: null, // Will be assigned later
-        created_by: order.created_by,
-        assigned_at: null,
-        estimated_delivery_time: null,
-        delivery_notes: order.delivery_notes || null,
-        created_at: order.created_at,
-        updated_at: order.updated_at,
-      }
-
-      orders.push(cleanOrder)
     }
 
-    if (orders.length === 0) {
+    console.log(`📊 Parsing complete: ${validOrders.length} valid orders, ${validationErrors.length} errors`)
+
+    if (validOrders.length === 0) {
       return NextResponse.json(
         {
           error: "No valid orders found in file",
-          details: errors,
+          debug: {
+            totalRows: lines.length - 1,
+            validOrders: validOrders.length,
+            validationErrors: validationErrors.slice(0, 10), // Limit errors shown
+            headerMap,
+            sampleRow: lines[1] ? parseCSVLine(lines[1]) : null,
+          },
         },
         { status: 400 },
       )
     }
 
-    // Insert orders into database in batches to avoid timeout
-    const batchSize = 50
-    let insertedCount = 0
-    const insertErrors = []
+    // Insert orders into database
+    const ordersToInsert = validOrders.map((order) => ({
+      ...order,
+      created_by: adminId,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }))
 
-    for (let i = 0; i < orders.length; i += batchSize) {
-      const batch = orders.slice(i, i + batchSize)
+    console.log("💾 Inserting orders into database:", ordersToInsert.length)
 
-      try {
-        const { data, error } = await supabase.from("orders").insert(batch)
+    const { data, error } = await supabase.from("orders").insert(ordersToInsert).select()
 
-        if (error) {
-          console.error("Batch insert error:", error)
-          insertErrors.push(`Batch ${Math.floor(i / batchSize) + 1}: ${error.message}`)
-        } else {
-          insertedCount += batch.length
-        }
-      } catch (batchError) {
-        console.error("Batch processing error:", batchError)
-        insertErrors.push(
-          `Batch ${Math.floor(i / batchSize) + 1}: ${batchError instanceof Error ? batchError.message : "Unknown error"}`,
-        )
-      }
-    }
-
-    if (insertErrors.length > 0 && insertedCount === 0) {
+    if (error) {
+      console.error("❌ Database insert error:", error)
       return NextResponse.json(
         {
-          error: "Failed to insert any orders",
-          details: [...errors, ...insertErrors],
+          error: "Failed to insert orders into database",
+          debug: {
+            supabaseError: error.message,
+            validOrders: validOrders.length,
+          },
         },
         { status: 500 },
       )
     }
 
+    console.log("✅ Successfully inserted orders:", data?.length)
+
     return NextResponse.json({
-      message: "Orders uploaded successfully",
-      imported: insertedCount,
-      total_processed: orders.length,
-      validation_errors: errors.length > 0 ? errors : undefined,
-      insert_errors: insertErrors.length > 0 ? insertErrors : undefined,
+      imported: data?.length || 0,
+      total_processed: lines.length - 1,
+      validation_errors: validationErrors.length > 0 ? validationErrors.slice(0, 10) : undefined,
+      success: true,
     })
   } catch (error) {
-    console.error("Error uploading orders:", error)
+    console.error("❌ Upload processing error:", error)
     return NextResponse.json(
       {
-        error: "Unexpected error uploading orders: " + (error instanceof Error ? error.message : "Unknown error"),
+        error: "Failed to process upload",
+        debug: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 },
     )
   }
 }
 
-export const config = {
-  api: {
-    bodyParser: false,
-  },
+function parseCSVLine(line: string): string[] {
+  const result: string[] = []
+  let current = ""
+  let inQuotes = false
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        // Escaped quote
+        current += '"'
+        i++ // Skip next quote
+      } else {
+        // Toggle quote state
+        inQuotes = !inQuotes
+      }
+    } else if (char === "," && !inQuotes) {
+      // End of field
+      result.push(current.trim())
+      current = ""
+    } else {
+      current += char
+    }
+  }
+
+  // Add the last field
+  result.push(current.trim())
+
+  return result
+}
+
+function createHeaderMapping(headers: string[]): Record<string, number> {
+  const mapping: Record<string, number> = {}
+
+  headers.forEach((header, index) => {
+    const cleanHeader = header.toLowerCase().replace(/[^a-z0-9]/g, "_")
+
+    // Map common variations
+    if (cleanHeader.includes("order") && cleanHeader.includes("number")) {
+      mapping.order_number = index
+    } else if (cleanHeader.includes("customer") && cleanHeader.includes("name")) {
+      mapping.customer_name = index
+    } else if (cleanHeader.includes("customer") && cleanHeader.includes("phone")) {
+      mapping.customer_phone = index
+    } else if (cleanHeader.includes("customer") && cleanHeader.includes("email")) {
+      mapping.customer_email = index
+    } else if (cleanHeader.includes("pickup") && cleanHeader.includes("address")) {
+      mapping.pickup_address = index
+    } else if (cleanHeader.includes("delivery") && cleanHeader.includes("address")) {
+      mapping.delivery_address = index
+    } else if (cleanHeader.includes("priority")) {
+      mapping.priority = index
+    } else if (cleanHeader.includes("delivery") && cleanHeader.includes("notes")) {
+      mapping.delivery_notes = index
+    } else if (cleanHeader.includes("notes")) {
+      mapping.delivery_notes = index
+    }
+  })
+
+  return mapping
+}
+
+function getValueByHeader(values: string[], headerMap: Record<string, number>, key: string): string | undefined {
+  const index = headerMap[key]
+  if (index !== undefined && index < values.length) {
+    const value = values[index]?.replace(/^"|"$/g, "").trim() // Remove quotes and trim
+    return value || undefined
+  }
+  return undefined
 }

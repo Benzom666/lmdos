@@ -12,7 +12,7 @@ import { useAuth } from "@/contexts/auth-context"
 import { supabase, type Order } from "@/lib/supabase"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import OptimizedDeliveryMap from "@/components/optimized-delivery-map"
+import MobileMapWidget from "@/components/mobile-map-widget"
 import { routeManager } from "@/lib/route-manager"
 import { routePersistenceService } from "@/lib/route-persistence"
 import {
@@ -30,7 +30,6 @@ import {
   User,
   Truck,
   Shuffle,
-  Map,
   Hash,
   Globe,
   Filter,
@@ -62,7 +61,6 @@ export default function DriverOrdersPage() {
   const [statusFilter, setStatusFilter] = useState("all")
   const [priorityFilter, setPriorityFilter] = useState("all")
   const [activeTab, setActiveTab] = useState("active")
-  const [showMap, setShowMap] = useState(false)
   const [isOptimizing, setIsOptimizing] = useState(false)
   const [driverLocation, setDriverLocation] = useState<[number, number] | null>(null)
   const [showFilters, setShowFilters] = useState(false)
@@ -362,30 +360,6 @@ export default function DriverOrdersPage() {
     }
   }
 
-  const viewOptimizedRoute = () => {
-    console.log("View route clicked. Route state:", routeState)
-
-    if (!routeState.isOptimized) {
-      toast({
-        title: "No Optimized Route",
-        description: "Please optimize the route first.",
-        variant: "destructive",
-      })
-      return
-    }
-
-    if (routeState.optimizedOrders.length === 0) {
-      toast({
-        title: "No Route Data",
-        description: "No optimized route data available. Please re-optimize.",
-        variant: "destructive",
-      })
-      return
-    }
-
-    setShowMap(true)
-  }
-
   const resetOptimization = async () => {
     try {
       console.log("Resetting route optimization")
@@ -681,9 +655,9 @@ export default function DriverOrdersPage() {
             Scan
           </Button>
           {routeState.isOptimized ? (
-            <Button variant="outline" size="sm" onClick={viewOptimizedRoute}>
-              <Map className="h-4 w-4 mr-1" />
-              Route
+            <Button variant="outline" size="sm" onClick={resetOptimization}>
+              <RotateCcw className="h-4 w-4 mr-1" />
+              Reset
             </Button>
           ) : (
             <Button size="sm" onClick={optimizeDeliveryRoute} disabled={isOptimizing}>
@@ -740,7 +714,7 @@ export default function DriverOrdersPage() {
                   variant="outline"
                   size="sm"
                   onClick={resetOptimization}
-                  className="border-green-300 text-green-700 hover:bg-green-100"
+                  className="border-green-300 text-green-700 hover:bg-green-100 bg-transparent"
                 >
                   <RotateCcw className="h-4 w-4 mr-1" />
                   Reset
@@ -749,6 +723,14 @@ export default function DriverOrdersPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Mobile-Responsive Map Widget */}
+        <MobileMapWidget
+          orders={routeState.optimizedOrders.length > 0 ? routeState.optimizedOrders : activeOrders}
+          driverLocation={driverLocation}
+          isOptimized={routeState.isOptimized}
+          title={routeState.isOptimized ? "Optimized Route Map" : "Delivery Locations"}
+        />
 
         {/* Search and Filters */}
         <Card>
@@ -883,17 +865,6 @@ export default function DriverOrdersPage() {
             />
           </TabsContent>
         </Tabs>
-
-        {/* Enhanced Delivery Map Modal */}
-        {showMap && (
-          <OptimizedDeliveryMap
-            orders={routeState.optimizedOrders.length > 0 ? routeState.optimizedOrders : getOrdersByTab("active")}
-            driverLocation={driverLocation}
-            onClose={() => setShowMap(false)}
-            isOptimized={routeState.isOptimized}
-            persistentRoute={routeState.persistentRoute}
-          />
-        )}
       </div>
     </DriverDashboardLayout>
   )

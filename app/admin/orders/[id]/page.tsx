@@ -28,6 +28,7 @@ import {
   Camera,
 } from "lucide-react"
 import { StatusChangeFeedback } from "@/components/status-change-feedback"
+import MapboxMap from "@/components/mapbox-map"
 
 // Mock live tracking component - in real app, integrate with Google Maps or similar
 const LiveTrackingMap = ({ order, driver }: { order: Order; driver: UserProfile | null }) => {
@@ -248,6 +249,16 @@ export default function OrderDetailPage() {
     )
   }
 
+  // Prepare order data for map
+  const orderForMap = {
+    id: order.id,
+    order_number: order.order_number,
+    customer_name: order.customer_name,
+    delivery_address: order.delivery_address,
+    priority: order.priority || "normal",
+    status: order.status,
+  }
+
   return (
     <DashboardLayout>
       <div className="space-y-4">
@@ -268,6 +279,18 @@ export default function OrderDetailPage() {
               </Button>
             )}
           </div>
+        </div>
+
+        {/* Map Section */}
+        <div className="grid gap-4">
+          <MapboxMap
+            orders={[orderForMap]}
+            driverLocation={driver ? [43.6532, -79.3832] : undefined}
+            title="Order Location"
+            height="300px"
+            className="col-span-full"
+            onOrderClick={() => {}}
+          />
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">

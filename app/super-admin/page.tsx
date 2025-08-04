@@ -4,10 +4,10 @@ import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { supabase } from "@/lib/supabase"
-import { Users, Truck, Package, TrendingUp, RefreshCw, Shuffle, MapPinIcon } from "lucide-react"
+import { Users, Truck, Package, TrendingUp, RefreshCw, MapPinIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/components/ui/use-toast"
-import DeliveryMap from "@/components/delivery-map"
+import MapboxMap from "@/components/mapbox-map"
 
 interface DashboardStats {
   totalAdmins: number
@@ -19,7 +19,7 @@ interface DashboardStats {
   inTransitOrders: number
 }
 
-interface Order {
+interface OrderForMap {
   id: string
   order_number: string
   customer_name: string
@@ -40,9 +40,7 @@ export default function SuperAdminDashboard() {
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [showMap, setShowMap] = useState(false)
-  const [allOrders, setAllOrders] = useState<Order[]>([])
-  const [isOptimizing, setIsOptimizing] = useState(false)
+  const [allOrders, setAllOrders] = useState<OrderForMap[]>([])
   const [adminLocation, setAdminLocation] = useState<[number, number] | null>(null)
   const { toast } = useToast()
 
@@ -97,13 +95,13 @@ export default function SuperAdminDashboard() {
         },
         (error) => {
           console.log("Geolocation error:", error)
-          // Default to NYC headquarters location
-          setAdminLocation([40.7589, -73.9851])
+          // Default to Toronto headquarters location
+          setAdminLocation([43.6532, -79.3832])
         },
       )
     } else {
-      // Default to NYC headquarters location
-      setAdminLocation([40.7589, -73.9851])
+      // Default to Toronto headquarters location
+      setAdminLocation([43.6532, -79.3832])
     }
   }
 
@@ -175,47 +173,6 @@ export default function SuperAdminDashboard() {
     }
   }
 
-  const viewAllOrdersOnMap = async () => {
-    if (allOrders.length === 0) {
-      toast({
-        title: "No Orders",
-        description: "No orders available to display on map.",
-        variant: "destructive",
-      })
-      return
-    }
-
-    setIsOptimizing(true)
-    try {
-      // Filter active orders for mapping
-      const activeOrders = allOrders.filter((order) => !["delivered", "failed", "cancelled"].includes(order.status))
-
-      if (activeOrders.length === 0) {
-        toast({
-          title: "No Active Orders",
-          description: "No active orders to display on map.",
-          variant: "destructive",
-        })
-        return
-      }
-
-      setShowMap(true)
-      toast({
-        title: "Map Loaded",
-        description: `Displaying ${activeOrders.length} active orders on map`,
-      })
-    } catch (error) {
-      console.error("Error loading map:", error)
-      toast({
-        title: "Error",
-        description: "Failed to load map. Please try again.",
-        variant: "destructive",
-      })
-    } finally {
-      setIsOptimizing(false)
-    }
-  }
-
   const completionRate = stats.totalOrders > 0 ? ((stats.completedOrders / stats.totalOrders) * 100).toFixed(1) : "0"
 
   return (
@@ -230,16 +187,6 @@ export default function SuperAdminDashboard() {
                 Location detected
               </div>
             )}
-            <Button onClick={viewAllOrdersOnMap} disabled={isOptimizing} variant="outline">
-              {isOptimizing ? (
-                "Loading..."
-              ) : (
-                <>
-                  <Shuffle className="mr-2 h-4 w-4" />
-                  View All Orders Map
-                </>
-              )}
-            </Button>
             <Button onClick={fetchStats} disabled={loading} variant="outline" size="sm">
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
               Refresh
@@ -303,6 +250,76 @@ export default function SuperAdminDashboard() {
           </Card>
         </div>
 
+        {/* System Overview Map */}
+        <div className="grid gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <MapboxMap
+              orders={allOrders.filter((order) => !["delivered", "failed", "cancelled"].includes(order.status))}
+              driverLocation={adminLocation}
+              height="600px"
+              title="System-wide Order Overview"
+              onOrderClick={(orderId) => {
+                // Super admin can view any order
+                window.location.href = `/admin/orders/${orderId}`
+              }}
+            />
+          </div>
+
+          {/* System Stats Sidebar */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Package className="h-5 w-5" />
+                System Activity
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Active Orders</span>
+                  <span className="font-medium">{stats.assignedOrders + stats.inTransitOrders}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Pending Orders</span>
+                  <span className="font-medium">{stats.pendingOrders}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Completed Today</span>
+                  <span className="font-medium">{stats.completedOrders}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Success Rate</span>
+                  <span className="font-medium">{completionRate}%</span>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t">
+                <h4 className="font-medium mb-3">Quick Actions</h4>
+                <div className="space-y-2">
+                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent" asChild>
+                    <a href="/super-admin/admins">
+                      <Users className="h-4 w-4 mr-2" />
+                      Manage Admins
+                    </a>
+                  </Button>
+                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent" asChild>
+                    <a href="/super-admin/drivers">
+                      <Truck className="h-4 w-4 mr-2" />
+                      Manage Drivers
+                    </a>
+                  </Button>
+                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent" asChild>
+                    <a href="/super-admin/stats">
+                      <TrendingUp className="h-4 w-4 mr-2" />
+                      View Analytics
+                    </a>
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Additional detailed stats */}
         <div className="grid gap-4 md:grid-cols-3">
           <Card>
@@ -343,6 +360,10 @@ export default function SuperAdminDashboard() {
                 <span className="font-medium text-green-600">Active</span>
               </div>
               <div className="flex justify-between">
+                <span className="text-sm text-muted-foreground">Mapbox:</span>
+                <span className="font-medium text-green-600">Operational</span>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-sm text-muted-foreground">Last Update:</span>
                 <span className="font-medium text-xs">{new Date().toLocaleTimeString()}</span>
               </div>
@@ -351,84 +372,28 @@ export default function SuperAdminDashboard() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Quick Actions</CardTitle>
+              <CardTitle className="text-lg">User Distribution</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              <Button variant="outline" size="sm" className="w-full" asChild>
-                <a href="/super-admin/admins">Manage Admins</a>
-              </Button>
-              <Button variant="outline" size="sm" className="w-full" asChild>
-                <a href="/super-admin/drivers">Manage Drivers</a>
-              </Button>
-              <Button variant="outline" size="sm" className="w-full" asChild>
-                <a href="/super-admin/stats">View Analytics</a>
-              </Button>
+              <div className="flex justify-between">
+                <span className="text-sm text-muted-foreground">Super Admins:</span>
+                <span className="font-medium">1</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm text-muted-foreground">Admins:</span>
+                <span className="font-medium">{stats.totalAdmins}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm text-muted-foreground">Drivers:</span>
+                <span className="font-medium">{stats.totalDrivers}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm text-muted-foreground">Total Users:</span>
+                <span className="font-medium">{1 + stats.totalAdmins + stats.totalDrivers}</span>
+              </div>
             </CardContent>
           </Card>
         </div>
-
-        {/* Recent Activity */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">System Overview</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <h4 className="font-medium mb-2">User Distribution</h4>
-                <div className="space-y-1">
-                  <div className="flex justify-between text-sm">
-                    <span>Super Admins:</span>
-                    <span>1</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Admins:</span>
-                    <span>{stats.totalAdmins}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Drivers:</span>
-                    <span>{stats.totalDrivers}</span>
-                  </div>
-                </div>
-              </div>
-              <div>
-                <h4 className="font-medium mb-2">Order Performance</h4>
-                <div className="space-y-1">
-                  <div className="flex justify-between text-sm">
-                    <span>Success Rate:</span>
-                    <span>{completionRate}%</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Active Orders:</span>
-                    <span>{stats.assignedOrders + stats.inTransitOrders}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Pending Orders:</span>
-                    <span>{stats.pendingOrders}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Delivery Map Modal */}
-        {showMap && (
-          <DeliveryMap
-            orders={allOrders
-              .filter((order) => !["delivered", "failed", "cancelled"].includes(order.status))
-              .map((order) => ({
-                id: order.id,
-                order_number: order.order_number,
-                customer_name: order.customer_name,
-                delivery_address: order.delivery_address,
-                priority: order.priority,
-                status: order.status,
-              }))}
-            driverLocation={adminLocation}
-            onClose={() => setShowMap(false)}
-          />
-        )}
       </div>
     </DashboardLayout>
   )
